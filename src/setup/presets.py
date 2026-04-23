@@ -237,13 +237,13 @@ def match_sources(
     """
     tokens = set(user_input.lower().split())
     input_lower = user_input.lower()
+    total_tokens = len(tokens) or 1
 
     seen = set()
     results = []
 
     for domain in presets.get("domains", []):
         domain_keywords = [k.lower() for k in domain.get("keywords", [])]
-        total_keywords = len(domain_keywords) or 1
 
         category_score = sum(
             1.0 for kw in domain_keywords
@@ -269,7 +269,7 @@ def match_sources(
             )
 
             raw_score = category_score + tag_score + desc_score
-            normalized = min(raw_score / total_keywords, 1.0)
+            normalized = min(raw_score / total_tokens, 1.0)
 
             if normalized >= threshold:
                 results.append(({**src, "origin": "preset"}, normalized))
