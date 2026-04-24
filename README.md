@@ -190,49 +190,6 @@ docker-compose run --rm horizon --hours 48  # Fetch from last 48 hours
 
 The generated report will be saved to `data/summaries/`.
 
-### Webhook Notification
-
-Horizon can push results to any webhook endpoint (Feishu/Lark, Slack, Discord, custom APIs, etc.) when the pipeline completes — both on success and failure.
-
-**Configuration:**
-
-```jsonc
-{
-  "webhook": {
-    "enabled": true,
-    "url_env": "HORIZON_WEBHOOK_URL",  // Set this env var to your webhook URL
-    "request_body": {   // Use a real JSON dict (recommended) or a string
-      "msg_type": "interactive",
-      "card": {
-        "header": {"title": {"tag": "plain_text", "content": "Horizon #{date}"}},
-        "elements": [
-          {"tag": "markdown", "content": "#{summary?limit=3000&split=---}"}
-        ]
-      }
-    },
-    "headers": ""       // Optional: "Authorization: Bearer xxx" per line
-  }
-}
-```
-
-**Template variables:**
-
-| Variable | Description |
-|----------|-------------|
-| `#{date}` | Report date (e.g. `2026-04-24`) |
-| `#{language}` | Language code (`en` or `zh`) |
-| `#{important_items}` | Number of items that passed the score threshold |
-| `#{all_items}` | Total number of fetched items |
-| `#{result}` | `success` or `failed` |
-| `#{timestamp}` | Unix timestamp |
-| `#{summary}` | Full summary markdown |
-
-**Parameterized syntax:** `#{key?limit=N&split=DELIM}` truncates long values by splitting on `DELIM` and keeping segments until the total character count reaches `N`. Useful for platforms with message length limits.
-
-Example: `#{summary?limit=3000&split=---}` keeps enough `---`-separated sections to stay under 3000 characters.
-
-When `request_body` is a dict, special characters in `#{summary}` (quotes, newlines) are safely handled via JSON serialization. When it's a string, use `#{summary}` only with safe content (no unescaped quotes).
-
 ### 4. Automate (Optional)
 
 Horizon works great as a **GitHub Actions** cron job. See [`.github/workflows/daily-summary.yml`](.github/workflows/daily-summary.yml) for a ready-to-use workflow that generates and deploys your daily briefing to GitHub Pages automatically.
@@ -259,6 +216,84 @@ uv run horizon-mcp
 Available tools include `hz_validate_config`, `hz_fetch_items`, `hz_score_items`, `hz_filter_items`, `hz_enrich_items`, `hz_generate_summary`, and `hz_run_pipeline`.
 
 See [`src/mcp/README.md`](src/mcp/README.md) for the full tool reference and [`src/mcp/integration.md`](src/mcp/integration.md) for client setup.
+
+## Webhook Notification
+
+Horizon can push results to any webhook endpoint (Feishu/Lark, Slack, Discord, custom APIs, etc.) when the pipeline completes — both on success and failure.
+
+**Configuration:**
+
+- <details><summary>DingTalk</summary>
+
+  - DingTalk desktop -> Group settings -> Smart group assistant -> Add robot -> Custom
+  - Only check `Custom keywords`, the keyword must appear in the request_body content, e.g.: `Horizon`
+  - Enter the DingTalk robot's `Webhook URL`
+  - Enter the following request_body:
+    ```json
+    {
+        "msgtype": "markdown",
+        "markdown": {
+            "title": "Horizon #{date} Daily",
+            "text": "Horizon result: #{result}\n\n Horizon important items: #{important_items}/#{all_items}\n\n #{summary}"
+        }
+    }
+    ```
+  </details>
+- <details><summary>Feishu / Lark</summary>
+
+  - Feishu desktop -> Group settings -> Add robot -> Custom robot
+  - Only check `Custom keywords` in security settings, the keyword must appear in the request_body content, e.g.: `Horizon`
+  - Enter the Feishu robot's `Webhook URL`
+  - Enter the following request_body:
+    ```json
+    {
+      "msg_type": "interactive",
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "Horizon #{date} Daily"
+          },
+          "template": "blue"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "Horizon result: #{result}\nHorizon important items: #{important_items}/#{all_items}"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "tag": "markdown",
+            "content": "#{summary?limit=200&split=---}"
+          }
+        ]
+      }
+    }
+    ```
+  </details>
+
+**Template variables:**
+
+| Variable | Description |
+|----------|-------------|
+| `#{date}` | Report date (e.g. `2026-04-24`) |
+| `#{language}` | Language code (`en` or `zh`) |
+| `#{important_items}` | Number of items that passed the score threshold |
+| `#{all_items}` | Total number of fetched items |
+| `#{result}` | `success` or `failed` |
+| `#{timestamp}` | Unix timestamp |
+| `#{summary}` | Full summary markdown |
+
+**Parameterized syntax:** `#{key?limit=N&split=DELIM}` truncates long values by splitting on `DELIM` and keeping segments until the total character count reaches `N`. Useful for platforms with message length limits.
+
+Example: `#{summary?limit=3000&split=---}` keeps enough `---`-separated sections to stay under 3000 characters.
+
+When `request_body` is a dict, special characters in `#{summary}` (quotes, newlines) are safely handled via JSON serialization. When it's a string, use `#{summary}` only with safe content (no unescaped quotes).
 
 ## Roadmap
 

@@ -201,49 +201,6 @@ docker-compose run --rm horizon --hours 48   # 抓取最近 48 小时的内容
 
 生成的日报将保存在 `data/summaries/` 目录中。
 
-### Webhook 通知
-
-Horizon 可以在 pipeline 完成（成功或失败）时将结果推送至任意 Webhook 端点——飞书、Slack、Discord、自定义 API 等。
-
-**配置示例：**
-
-```jsonc
-{
-  "webhook": {
-    "enabled": true,
-    "url_env": "HORIZON_WEBHOOK_URL",  // 将此环境变量设为你的 Webhook URL
-    "request_body": {   // 推荐使用 JSON 对象（dict），也可以是字符串
-      "msg_type": "interactive",
-      "card": {
-        "header": {"title": {"tag": "plain_text", "content": "Horizon #{date}日报"}},
-        "elements": [
-          {"tag": "markdown", "content": "#{summary?limit=3000&split=---}"}
-        ]
-      }
-    },
-    "headers": ""       // 可选："Authorization: Bearer xxx" 每行一个
-  }
-}
-```
-
-**模板变量：**
-
-| 变量 | 说明 |
-|------|------|
-| `#{date}` | 日报日期（如 `2026-04-24`） |
-| `#{language}` | 语言代码（`en` 或 `zh`） |
-| `#{important_items}` | 通过评分阈值的重要资讯数量 |
-| `#{all_items}` | 抓取的全部资讯数量 |
-| `#{result}` | `success` 或 `failed` |
-| `#{timestamp}` | Unix 时间戳 |
-| `#{summary}` | 完整的摘要 Markdown |
-
-**参数化语法：** `#{key?limit=N&split=DELIM}` 对长文本按 `DELIM` 分段截断，保留前几段使总字符数不超过 `N`。适用于飞书等有消息长度限制的平台。
-
-示例：`#{summary?limit=3000&split=---}` 会按 `---` 分段，保留字符数不超过 3000 的前几段内容。
-
-当 `request_body` 为 dict 时，`#{summary}` 中的引号和换行会通过 JSON 序列化自动转义，不会破坏 JSON 结构。当 `request_body` 为字符串时，`#{summary}` 中的特殊字符可能导致 JSON 非法，建议只在不含引号的内容中使用字符串格式。
-
 ### 4. 自动化（可选）
 
 Horizon 非常适合作为 **GitHub Actions** 定时任务运行。查看 [`.github/workflows/daily-summary.yml`](.github/workflows/daily-summary.yml) 获取现成的工作流配置，可自动生成日报并部署到 GitHub Pages。
@@ -270,6 +227,85 @@ uv run horizon-mcp
 可用工具包括 `hz_validate_config`、`hz_fetch_items`、`hz_score_items`、`hz_filter_items`、`hz_enrich_items`、`hz_generate_summary` 和 `hz_run_pipeline`。
 
 完整工具说明见 [`src/mcp/README.md`](src/mcp/README.md)，客户端接入见 [`src/mcp/integration.md`](src/mcp/integration.md)。
+
+### Webhook 通知
+
+Horizon 可以在 pipeline 完成（成功或失败）时将结果推送至任意 Webhook 端点——飞书、Slack、Discord、自定义 API 等。
+
+**配置示例：**
+
+- <details><summary>钉钉</summary>
+
+  - 钉钉电脑端 -> 群设置 -> 智能群助手 -> 添加机器人 -> 自定义
+  - 只勾选 `自定义关键词`, 输入的关键字必须包含在request_body的content中, 如：`Horizon日报`
+  - URL中输入钉钉机器人的 `Webhook地址`
+  - request_body中输入
+    ```json
+    {
+        "msgtype": "markdown",
+        "markdown": {
+            "title": "Horizon #{date}日报",
+            "text": "Horizon生成结果: #{result}\n\n Horizon日报重要资讯数量: #{important_items}/#{all_items}\n\n #{summary}"
+        }
+    }
+    ```
+  </details>
+- <details><summary>飞书</summary>
+
+  - 飞书电脑端 -> 群设置 -> 添加机器人 -> 自定义机器人
+  - 安全设置只勾选 `自定义关键词`, 输入的关键字必须包含在request_body的content中, 如：`Horizon日报`
+  - URL中输入飞书机器人的 `Webhook地址`
+  - request_body中输入
+    ```json
+    {
+      "msg_type": "interactive",
+      "card": {
+        "config": {
+          "wide_screen_mode": true
+        },
+        "header": {
+          "title": {
+            "tag": "plain_text",
+            "content": "Horizon #{date}日报"
+          },
+          "template": "blue"
+        },
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "Horizon生成结果: #{result}\nHorizon日报重要资讯数量: #{important_items}/#{all_items}"
+          },
+          {
+            "tag": "hr"
+          },
+          {
+            "tag": "markdown",
+            "content": "#{summary?limit=200&split=---}"
+          }
+        ]
+      }
+    }
+    ```
+</details>
+
+**模板变量：**
+
+| 变量 | 说明 |
+|------|------|
+| `#{date}` | 日报日期（如 `2026-04-24`） |
+| `#{language}` | 语言代码（`en` 或 `zh`） |
+| `#{important_items}` | 通过评分阈值的重要资讯数量 |
+| `#{all_items}` | 抓取的全部资讯数量 |
+| `#{result}` | `success` 或 `failed` |
+| `#{timestamp}` | Unix 时间戳 |
+| `#{summary}` | 完整的摘要 Markdown |
+
+**参数化语法：** `#{key?limit=N&split=DELIM}` 对长文本按 `DELIM` 分段截断，保留前几段使总字符数不超过 `N`。适用于飞书等有消息长度限制的平台。
+
+示例：`#{summary?limit=3000&split=---}` 会按 `---` 分段，保留字符数不超过 3000 的前几段内容。
+
+当 `request_body` 为 dict 时，`#{summary}` 中的引号和换行会通过 JSON 序列化自动转义，不会破坏 JSON 结构。当 `request_body` 为字符串时，`#{summary}` 中的特殊字符可能导致 JSON 非法，建议只在不含引号的内容中使用字符串格式。
+
 
 ## 路线图
 
