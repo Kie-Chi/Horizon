@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel, HttpUrl, Field
 
 
@@ -133,6 +133,15 @@ class SourcesConfig(BaseModel):
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
 
 
+class WebhookConfig(BaseModel):
+    """Webhook notification configuration."""
+
+    url_env: Optional[str] = None          # Environment variable name containing the webhook URL
+    request_body: Optional[Union[str, dict, list]] = None  # POST body: real JSON object or string with #{key} placeholders; if empty, will use GET
+    headers: Optional[str] = None          # Custom headers, "Key: Value" per line
+    enabled: bool = False
+
+
 class EmailConfig(BaseModel):
     """Email configuration for updates/subscriptions."""
     imap_server: str
@@ -162,3 +171,4 @@ class Config(BaseModel):
     sources: SourcesConfig
     filtering: FilteringConfig
     email: Optional[EmailConfig] = None
+    webhook: Optional[WebhookConfig] = None

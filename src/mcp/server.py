@@ -398,6 +398,40 @@ def hz_get_metrics() -> dict[str, Any]:
         return payload
 
 
+@mcp.tool()
+async def hz_send_webhook(
+    date: str,
+    language: str = "zh",
+    important_items: int = 0,
+    all_items: int = 0,
+    result: str = "success",
+    summary: str = "",
+    horizon_path: str | None = None,
+    config_path: str | None = None,
+) -> dict[str, Any]:
+    """Send a webhook notification with the given variables.
+
+    Uses the webhook URL (from environment variable), request_body template,
+    and headers from the Horizon config. Template variables #{date}, #{language},
+    #{important_items}, #{all_items}, #{result}, #{timestamp},
+    #{summary} are replaced in the URL and request_body before sending.
+    """
+
+    return await _run_tool(
+        "hz_send_webhook",
+        lambda: service.send_webhook(
+            date=date,
+            language=language,
+            important_items=important_items,
+            all_items=all_items,
+            result=result,
+            summary=summary,
+            horizon_path=horizon_path,
+            config_path=config_path,
+        ),
+    )
+
+
 @mcp.resource("horizon://server/info")
 def r_server_info() -> dict[str, Any]:
     """Server metadata resource."""
