@@ -163,6 +163,14 @@ class FilteringConfig(BaseModel):
     time_window_hours: int = 24
 
 
+class DaemonConfig(BaseModel):
+    """Daemon/scheduling configuration for continuous operation."""
+
+    mode: str = "interval"           # "interval" or "schedule"
+    interval_hours: int = 24         # Hours between runs (interval mode)
+    schedule_time: str = "08:00"     # Daily run time UTC (schedule mode)
+
+
 class Config(BaseModel):
     """Main configuration model."""
 
@@ -171,4 +179,5 @@ class Config(BaseModel):
     sources: SourcesConfig
     filtering: FilteringConfig
     email: Optional[EmailConfig] = None
+    daemon: Optional[DaemonConfig] = None
     webhook: Optional[WebhookConfig] = None
