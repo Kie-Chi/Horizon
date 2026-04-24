@@ -215,17 +215,24 @@ class WebhookNotifier:
                         headers=headers,
                     )
 
-            self.console.print(
-                f"🔔 Webhook called successfully! "
-                f"Response status: {response.status_code}"
-            )
-            logger.info(
-                "Webhook called successfully! URL: %s, status: %d, body: %s",
-                request_url,
-                response.status_code,
-                response.text[:500],
-            )
+            if response.status_code == 200:
+                logger.info(
+                    "Webhook sent OK. URL: %s, body: %s",
+                    request_url,
+                    response.text[:500],
+                )
+            else:
+                self.console.print(
+                    f"[red]Webhook failed! status={response.status_code} "
+                    f"response={response.text[:500]}[/red]"
+                )
+                logger.error(
+                    "Webhook failed! URL: %s, status: %d, body: %s",
+                    request_url,
+                    response.status_code,
+                    response.text[:500],
+                )
 
         except Exception as e:
-            self.console.print(f"[red]❌ Webhook call failed! Exception: {e}[/red]")
+            self.console.print(f"[red]Webhook call failed! Exception: {e}[/red]")
             logger.error("Webhook call failed! URL: %s, exception: %s", request_url, e)
