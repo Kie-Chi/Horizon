@@ -61,6 +61,7 @@ Horizon collects news from multiple customizable sources, uses AI to score and f
 - **💬 Community Voices** — Collects and summarizes discussions from comments on HackerNews, Reddit, etc.
 - **🔗 Cross-Source Deduplication** — Merges duplicate items from different platforms automatically
 - **📧 Email Subscription** — Self-hosted newsletter system (SMTP/IMAP) that handles "Subscribe" requests automatically
+- **🔔 Webhook Notification** — Send results to Feishu, Slack, Discord, or any webhook endpoint with template rendering and truncation
 - **📝 Static Site Generation** — Deploys as a GitHub Pages site via GitHub Actions, updated on a schedule
 - **⚙️ Fully Configurable** — Single JSON config file, easy to customize sources, thresholds, and AI providers
 - **🧙 Setup Wizard** — Interactive CLI that recommends sources based on your interests.
@@ -189,6 +190,49 @@ docker-compose run --rm horizon --hours 48  # Fetch from last 48 hours
 
 The generated report will be saved to `data/summaries/`.
 
+### Webhook Notification
+
+Horizon can push results to any webhook endpoint (Feishu/Lark, Slack, Discord, custom APIs, etc.) when the pipeline completes — both on success and failure.
+
+**Configuration:**
+
+```jsonc
+{
+  "webhook": {
+    "enabled": true,
+    "url_env": "HORIZON_WEBHOOK_URL",  // Set this env var to your webhook URL
+    "request_body": {   // Use a real JSON dict (recommended) or a string
+      "msg_type": "interactive",
+      "card": {
+        "header": {"title": {"tag": "plain_text", "content": "Horizon #{date}"}},
+        "elements": [
+          {"tag": "markdown", "content": "#{summary?limit=3000&split=---}"}
+        ]
+      }
+    },
+    "headers": ""       // Optional: "Authorization: Bearer xxx" per line
+  }
+}
+```
+
+**Template variables:**
+
+| Variable | Description |
+|----------|-------------|
+| `#{date}` | Report date (e.g. `2026-04-24`) |
+| `#{language}` | Language code (`en` or `zh`) |
+| `#{important_items}` | Number of items that passed the score threshold |
+| `#{all_items}` | Total number of fetched items |
+| `#{result}` | `success` or `failed` |
+| `#{timestamp}` | Unix timestamp |
+| `#{summary}` | Full summary markdown |
+
+**Parameterized syntax:** `#{key?limit=N&split=DELIM}` truncates long values by splitting on `DELIM` and keeping segments until the total character count reaches `N`. Useful for platforms with message length limits.
+
+Example: `#{summary?limit=3000&split=---}` keeps enough `---`-separated sections to stay under 3000 characters.
+
+When `request_body` is a dict, special characters in `#{summary}` (quotes, newlines) are safely handled via JSON serialization. When it's a string, use `#{summary}` only with safe content (no unescaped quotes).
+
 ### 4. Automate (Optional)
 
 Horizon works great as a **GitHub Actions** cron job. See [`.github/workflows/daily-summary.yml`](.github/workflows/daily-summary.yml) for a ready-to-use workflow that generates and deploys your daily briefing to GitHub Pages automatically.
@@ -229,8 +273,8 @@ See [`src/mcp/README.md`](src/mcp/README.md) for the full tool reference and [`s
 - [x] **MCP server integration**
 - [x] Web UI dashboard
 - [x] **Setup Wizard** — interactive CLI that recommends sources based on user interests
+- [x] **Webhook Notification** — push results to Feishu, Slack, Discord, or any webhook endpoint
 - [X] **Improved Web UI** — better digest and article detail experience
-- [ ] Slack / Webhook notification
 - [ ] More source types (Twitter/X, Discord, etc.)
 - [ ] Custom scoring prompts per source
 
