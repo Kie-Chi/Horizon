@@ -5,10 +5,12 @@ import json
 import logging
 import os
 import re
-from typing import Optional, Union
+from datetime import datetime, timezone
+from typing import List, Optional, Union
 import httpx
 
-from ..models import WebhookConfig
+from ..models import ContentItem, WebhookConfig
+from ..ai.summarizer import DailySummarizer
 
 logger = logging.getLogger(__name__)
 
@@ -302,3 +304,112 @@ class WebhookNotifier:
         except Exception as e:
             self.console.print(f"[red]Webhook call failed! Exception: {e}[/red]")
             logger.error("Webhook call failed! URL: %s, exception: %s", request_url, e)
+
+    async def send_daily_summary(
+        self,
+        summary: str,
+        important_items: List[ContentItem],
+        all_items_count: int,
+        date: str,
+        lang: str,
+        summarizer: DailySummarizer,
+    ) -> None:
+        """Send daily summary webhook notification.
+
+        Handles language filtering, delivery mode (summary vs summary_and_items),
+        and variable construction internally.
+
+        Args:
+            summary: Full markdown summary text
+            important_items: List of important content items
+            all_items_count: Total number of items fetched
+            date: Date string (YYYY-MM-DD)
+            lang: Language code ("en" or "zh")
+            summarizer: DailySummarizer instance for generating webhook overviews
+        """
+        # Language filter
+        webhook_languages = getattr(self.config, "languages", None)
+        if webhook_languages and lang not in webhook_languages:
+            self.console.print(
+                f"🔕 Skipping {lang.upper()} webhook notification "
+                f"(filtered by webhook.languages)"
+            )
+            return
+
+        self.console.print(f"🔔 Sending {lang.upper()} webhook notification...")
+
+        base_vars = {
+            "date": date,
+            "language": lang,
+            "important_items": len(important_items),
+            "all_items": all_items_count,
+            "result": "success",
+            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+        }
+
+        delivery = getattr(self.config, "delivery", "summary")
+
+        if delivery == "summary_and_items":
+            overview = summarizer.generate_webhook_overview(
+                important_items, date, all_items_count, language=lang,
+            )
+            await self.notify({
+                **base_vars,
+                "message_title": (
+                    f"Horizon {date} 总览" if lang == "zh"
+                    else f"Horizon {date} Overview"
+                ),
+                "message_kind": "overview",
+                "summary": overview,
+            })
+            for item_index, item in enumerate(important_items, start=1):
+                title = str(item.metadata.get(f"title_{lang}") or item.title)
+                item_summary = summarizer.generate_webhook_item(
+                    item, language=lang, index=item_index,
+                    total=len(important_items),
+                )
+                await self.notify({
+                    **base_vars,
+                    "message_title": f"{item_index}/{len(important_items)} {title}",
+                    "message_kind": "item",
+                    "item_index": item_index,
+                    "item_count": len(important_items),
+                    "item_title": title,
+                    "item_url": str(item.url),
+                    "item_score": item.ai_score or "",
+                    "summary": item_summary,
+                })
+        else:
+            await self.notify({
+                **base_vars,
+                "message_title": (
+                    f"Horizon {date} 日报" if lang == "zh"
+                    else f"Horizon {date} Daily"
+                ),
+                "message_kind": "summary",
+                "summary": summary,
+            })
+
+    async def send_failure(
+        self,
+        date: str,
+        error_message: str,
+    ) -> None:
+        """Send webhook notification when the pipeline fails.
+
+        Args:
+            date: Date string (YYYY-MM-DD)
+            error_message: Description of the failure
+        """
+        self.console.print("🔔 Sending webhook failure notification...")
+        await self.notify({
+            "date": date,
+            "language": "",
+            "important_items": 0,
+            "all_items": 0,
+            "result": "failed",
+            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+            "message_title": "Horizon generation failed",
+            "message_kind": "failure",
+            "summary": f"generation failed: {error_message}",
+        })

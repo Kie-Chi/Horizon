@@ -169,61 +169,14 @@ class HorizonOrchestrator:
 
                 # Send webhook notification if configured
                 if self.webhook_notifier:
-                    webhook_languages = getattr(self.config.webhook, "languages", None) if self.config.webhook else None
-                    if webhook_languages and lang not in webhook_languages:
-                        self.console.print(f"🔕 Skipping {lang.upper()} webhook notification (filtered by webhook.languages)")
-                        continue
-
-                    self.console.print(f"🔔 Sending {lang.upper()} webhook notification...")
-                    delivery = getattr(self.config.webhook, "delivery", "summary") if self.config.webhook else "summary"
-                    base_vars = {
-                        "date": today,
-                        "language": lang,
-                        "important_items": len(important_items),
-                        "all_items": len(all_items),
-                        "result": "success",
-                        "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
-                    }
-
-                    if delivery == "summary_and_items":
-                        overview = summarizer.generate_webhook_overview(
-                            important_items,
-                            today,
-                            len(all_items),
-                            language=lang,
-                        )
-                        await self.webhook_notifier.notify({
-                            **base_vars,
-                            "message_title": f"Horizon {today} 总览" if lang == "zh" else f"Horizon {today} Overview",
-                            "message_kind": "overview",
-                            "summary": overview,
-                        })
-                        for item_index, item in enumerate(important_items, start=1):
-                            title = str(item.metadata.get(f"title_{lang}") or item.title)
-                            item_summary = summarizer.generate_webhook_item(
-                                item,
-                                language=lang,
-                                index=item_index,
-                                total=len(important_items),
-                            )
-                            await self.webhook_notifier.notify({
-                                **base_vars,
-                                "message_title": f"{item_index}/{len(important_items)} {title}",
-                                "message_kind": "item",
-                                "item_index": item_index,
-                                "item_count": len(important_items),
-                                "item_title": title,
-                                "item_url": str(item.url),
-                                "item_score": item.ai_score or "",
-                                "summary": item_summary,
-                            })
-                    else:
-                        await self.webhook_notifier.notify({
-                            **base_vars,
-                            "message_title": f"Horizon {today} 日报" if lang == "zh" else f"Horizon {today} Daily",
-                            "message_kind": "summary",
-                            "summary": summary,
-                        })
+                    await self.webhook_notifier.send_daily_summary(
+                        summary=summary,
+                        important_items=important_items,
+                        all_items_count=len(all_items),
+                        date=today,
+                        lang=lang,
+                        summarizer=summarizer,
+                    )
 
             self.console.print("[bold green]✅ Horizon completed successfully![/bold green]")
             usage = get_usage_snapshot()
@@ -246,19 +199,10 @@ class HorizonOrchestrator:
 
             # Send webhook failure notification if configured
             if self.webhook_notifier:
-                self.console.print("🔔 Sending webhook failure notification...")
-                webhook_vars = {
-                    "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                    "language": "",
-                    "important_items": 0,
-                    "all_items": 0,
-                    "result": "failed",
-                    "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
-                    "message_title": "Horizon generation failed",
-                    "message_kind": "failure",
-                    "summary": f"generation failed: {e}",
-                }
-                await self.webhook_notifier.notify(webhook_vars)
+                await self.webhook_notifier.send_failure(
+                    date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                    error_message=str(e),
+                )
 
             raise
 
