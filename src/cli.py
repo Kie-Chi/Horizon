@@ -216,3 +216,82 @@ def webhook_test(date, language, result, summary):
         response_text = res.get("response", "")
         console.print(f"  Status:    {status_code}")
         console.print(f"  Response:  {response_text}")
+
+
+@cli.command()
+@click.option("--interval", type=int, default=None, help="Hours between runs (interval mode)")
+@click.option("--schedule", type=str, default=None, help="Daily run time UTC, e.g. '08:00' (schedule mode)")
+@click.option("--hours", type=int, default=None, help="Override time window hours for each run")
+def daemon(interval, schedule, hours):
+    """Run as a daemon with continuous scheduling."""
+    load_dotenv()
+
+    data_dir = Path("data")
+    storage = StorageManager(data_dir=str(data_dir))
+
+    try:
+        config = storage.load_config()
+    except FileNotFoundError:
+        console.print("[bold red]Configuration file not found![/bold red]")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[bold red]Error loading configuration: {e}[/bold red]")
+        sys.exit(1)
+
+    from .services.daemon import DaemonRunner
+
+    runner = DaemonRunner(config, storage)
+
+    # Determine mode from args
+    mode = None
+    if schedule:
+        mode = "schedule"
+    elif interval:
+        mode = "interval"
+
+    try:
+        asyncio.run(runner.run(
+            mode=mode,
+            interval_hours=interval,
+            schedule_time=schedule,
+            force_hours=hours,
+        ))
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Daemon interrupted by user[/yellow]")
+        sys.exit(0)
+
+
+@cli.group()
+def service():
+    """Manage systemd service for Horizon daemon."""
+    pass
+
+
+@service.command()
+@click.option("--interval", type=int, default=24, help="Hours between runs for install (default: 24)")
+@click.option("--schedule", type=str, default=None, help="Daily run time UTC for install (e.g. '08:00')")
+def install(interval, schedule):
+    """Install Horizon as a systemd service."""
+    from .services.systemd import install_service
+    install_service(interval=interval, schedule=schedule)
+
+
+@service.command()
+def uninstall():
+    """Uninstall the Horizon systemd service."""
+    from .services.systemd import uninstall_service
+    uninstall_service()
+
+
+@service.command()
+def restart():
+    """Restart the Horizon systemd service."""
+    from .services.systemd import restart_service
+    restart_service()
+
+
+@service.command()
+def status():
+    """Show the status of the Horizon systemd service."""
+    from .services.systemd import status_service
+    status_service()
