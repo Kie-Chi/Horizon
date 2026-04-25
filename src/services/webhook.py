@@ -151,7 +151,7 @@ class WebhookNotifier:
         else:
             self.console = console
 
-    async def notify(self, variables: dict) -> None:
+    async def notify(self, variables: dict) -> dict:
         """Send a webhook notification with template variable substitution.
 
         If request_body is empty, sends a GET request.
@@ -161,13 +161,17 @@ class WebhookNotifier:
         Args:
             variables: Dict of template variable values to replace
                        in URL, request_body, and headers.
+
+        Returns:
+            Dict with 'status_code' and 'response' keys, or None if
+            skipped (disabled or URL empty).
         """
         if not self.config.enabled:
-            return
+            return None
 
         if not self.url:
             logger.warning("Webhook enabled but URL is empty (env var %s not set), skipping notification.", self.config.url_env)
-            return
+            return None
 
         # Replace template variables in URL
         request_url = _render(self.url, variables)
@@ -221,6 +225,7 @@ class WebhookNotifier:
                     request_url,
                     response.text[:500],
                 )
+                return {"status_code": response.status_code, "response": response.text[:500]}
             else:
                 self.console.print(
                     f"[red]Webhook failed! status={response.status_code} "
@@ -232,7 +237,9 @@ class WebhookNotifier:
                     response.status_code,
                     response.text[:500],
                 )
+                return {"status_code": response.status_code, "response": response.text[:500]}
 
         except Exception as e:
             self.console.print(f"[red]Webhook call failed! Exception: {e}[/red]")
             logger.error("Webhook call failed! URL: %s, exception: %s", request_url, e)
+            return {"status_code": None, "response": str(e)}
