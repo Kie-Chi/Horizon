@@ -47,11 +47,20 @@ def _check_platform():
         sys.exit(1)
 
 
-def _check_root():
-    """Check that we have root privileges."""
-    if os.geteuid() != 0:
-        console.print("[red]Service management requires root privileges. Use sudo.[/red]")
+def _ensure_root():
+    """Ensure root privileges, auto-elevate with sudo if not already root."""
+    if os.geteuid() == 0:
+        return
+
+    sudo_path = shutil.which("sudo")
+    if not sudo_path:
+        console.print("[red]sudo is not available. Service management requires root privileges.[/red]")
         sys.exit(1)
+
+    console.print("[cyan]Elevating privileges with sudo...[/cyan]")
+
+    # Replace current process with sudo running the same command
+    os.execvp(sudo_path, ["sudo", sys.executable] + sys.argv)
 
 
 def _detect_exec_start(
@@ -123,7 +132,7 @@ def install_service(
         schedule: Schedule time string (for schedule mode, overrides interval).
     """
     _check_platform()
-    _check_root()
+    _ensure_root()
 
     exec_start = _detect_exec_start(interval=interval, schedule=schedule)
     work_dir = _detect_work_dir()
@@ -158,7 +167,7 @@ def install_service(
 def uninstall_service() -> None:
     """Uninstall the Horizon systemd service."""
     _check_platform()
-    _check_root()
+    _ensure_root()
 
     if not UNIT_FILE_PATH.exists():
         console.print("[yellow]Horizon service is not installed.[/yellow]")
@@ -185,7 +194,7 @@ def uninstall_service() -> None:
 def restart_service() -> None:
     """Restart the Horizon systemd service."""
     _check_platform()
-    _check_root()
+    _ensure_root()
 
     if not UNIT_FILE_PATH.exists():
         console.print("[yellow]Horizon service is not installed. Run 'horizon service install' first.[/yellow]")
