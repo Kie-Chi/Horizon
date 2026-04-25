@@ -227,7 +227,7 @@ Horizon can push results to any webhook endpoint (Feishu/Lark, Slack, Discord, c
 
   - DingTalk desktop -> Group settings -> Smart group assistant -> Add robot -> Custom
   - Only check `Custom keywords`, the keyword must appear in the request_body content, e.g.: `Horizon`
-  - Enter the DingTalk robot's `Webhook URL`
+  - Enter the DingTalk robot's `Webhook URL` in the `.env` file under`HORIZON_WEBHOOK_URL`
   - Enter the following request_body:
     ```json
     {
@@ -243,7 +243,7 @@ Horizon can push results to any webhook endpoint (Feishu/Lark, Slack, Discord, c
 
   - Feishu desktop -> Group settings -> Add robot -> Custom robot
   - Only check `Custom keywords` in security settings, the keyword must appear in the request_body content, e.g.: `Horizon`
-  - Enter the Feishu robot's `Webhook URL`
+  - Enter the Feishu robot's `Webhook URL` in the `.env` file under `HORIZON_WEBHOOK_URL`
   - Enter the following request_body:
     ```json
     {
