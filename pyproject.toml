@@ -31,6 +31,7 @@ dev = [
 horizon = "src.main:main"
 horizon-mcp = "src.mcp.server:main"
 horizon-wizard = "src.setup.wizard:main"
+horizon-webhook = "src.cli_webhook:main"
 
 [build-system]
 requires = ["hatchling"]
