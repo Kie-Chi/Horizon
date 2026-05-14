@@ -141,6 +141,7 @@ Uses official vulnerability data sources:
 
 - CISA KEV JSON — Known Exploited Vulnerabilities catalog (static JSON feed with ETag/Last-Modified caching)
 - CVE List V5 `cvelist_v5_delta` — official CVE List delta releases from `CVEProject/cvelistV5`
+- GitHub Advisory Database `ghsa` — GitHub Security Advisory REST API, sorted by last update time
 - NVD API 2.0 `nvd_recent` — newly published CVEs, queried with `pubStartDate`/`pubEndDate` time range
 - NVD API 2.0 `nvd_modified` — recently modified CVEs, queried with `lastModStartDate`/`lastModEndDate` time range
 
@@ -151,6 +152,12 @@ Horizon treats `cvelist_v5_delta` as the primary incremental discovery source. N
 - Tracks the last processed release tag/timestamp in scraper state
 - Downloads the matching hourly `delta_CVEs` zip asset for each unseen release
 - Applies local keyword/vendor/product/CVSS filtering after parsing the CVE JSON records
+
+**GHSA**:
+- Calls the GitHub Advisory REST API with `sort=updated&direction=desc`
+- Follows pagination until the feed reaches items older than the current run window
+- Preserves advisories that only have a `GHSA-*` identifier and no CVE alias
+- Reuses the project's standard `GITHUB_TOKEN` when present for higher GitHub API limits
 
 **Server-side filtering (NVD API 2.0)**:
 - Time range: `pubStartDate`/`pubEndDate` (for recent) or `lastModStartDate`/`lastModEndDate` (for modified)
@@ -166,12 +173,13 @@ Horizon treats `cvelist_v5_delta` as the primary incremental discovery source. N
 - With API key: 50 requests per 30-second window
 - Horizon makes at most 2 NVD API requests per run (one per enabled NVD provider), so an API key is optional
 
-All enabled providers are fetched concurrently inside one scraper. Items are deduplicated by `cve_id` before they leave the scraper. Priority order is:
+All enabled providers are fetched concurrently inside one scraper. Items are deduplicated by `cve_id`, then `ghsa_id` before they leave the scraper. Priority order is:
 
 1. `cisa_kev`
 2. `cvelist_v5_delta`
-3. `nvd_recent`
-4. `nvd_modified`
+3. `ghsa`
+4. `nvd_recent`
+5. `nvd_modified`
 
 If the same CVE appears in both KEV and NVD, the KEV item wins and missing NVD metadata such as CVSS, CWE, and reference URLs is merged in.
 
@@ -200,6 +208,14 @@ If the same CVE appears in both KEV and NVD, the KEV item wins and missing NVD m
       "products": []
     },
     {
+      "type": "ghsa",
+      "enabled": false,
+      "min_cvss": 7.0,
+      "keywords": [],
+      "vendors": [],
+      "products": []
+    },
+    {
       "type": "nvd_recent",
       "enabled": false,
       "min_cvss": 7.0,
@@ -211,8 +227,8 @@ If the same CVE appears in both KEV and NVD, the KEV item wins and missing NVD m
 }
 ```
 
-- `type` — `cisa_kev`, `cvelist_v5_delta`, `nvd_recent`, or `nvd_modified`
-- `min_cvss` — optional minimum CVSS threshold for `cvelist_v5_delta` and NVD providers
+- `type` — `cisa_kev`, `cvelist_v5_delta`, `ghsa`, `nvd_recent`, or `nvd_modified`
+- `min_cvss` — optional minimum CVSS threshold for every provider except `cisa_kev`
 - top-level `keywords` / `vendors` / `products` — default filters shared by all CVE providers
 - provider-level `keywords` / `vendors` / `products` — appended to the top-level defaults for that provider
 

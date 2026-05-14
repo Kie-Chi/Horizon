@@ -280,6 +280,7 @@ The CVE source uses NVD API 2.0 for real-time queries with server-side time rang
 
 - `cisa_kev` — CISA Known Exploited Vulnerabilities catalog
 - `cvelist_v5_delta` — official CVE List delta releases from `CVEProject/cvelistV5`
+- `ghsa` — GitHub Advisory Database, fetched from the GitHub advisories REST API
 - `nvd_recent` — newly published CVEs from NVD (queried via API 2.0 with `pubStartDate`/`pubEndDate`)
 - `nvd_modified` — recently modified CVEs from NVD (queried via API 2.0 with `lastModStartDate`/`lastModEndDate`)
 
@@ -309,6 +310,14 @@ The CVE source uses NVD API 2.0 for real-time queries with server-side time rang
           "products": []
         },
         {
+          "type": "ghsa",
+          "enabled": false,
+          "min_cvss": 7.0,
+          "keywords": [],
+          "vendors": [],
+          "products": []
+        },
+        {
           "type": "nvd_recent",
           "enabled": false,
           "min_cvss": 7.0,
@@ -326,12 +335,14 @@ The CVE source uses NVD API 2.0 for real-time queries with server-side time rang
 - top-level `keywords`, `vendors`, `products` — default filters shared by every enabled CVE provider
 - `nvd_api_key_env` — optional environment variable name containing a NVD API key. Without a key, the rate limit is 5 requests per 30 seconds; with a key, it increases to 50. Horizon makes at most 2 NVD requests per run, so a key is optional. Set to `null` to skip.
 - `providers` — one or more provider entries
-- `type` — `cisa_kev`, `cvelist_v5_delta`, `nvd_recent`, or `nvd_modified`
-- `min_cvss` — minimum CVSS base score for `cvelist_v5_delta` and NVD providers; ignored for `cisa_kev`. The API uses coarse severity filtering (HIGH, CRITICAL, etc.) for NVD, then local filtering enforces the exact float threshold.
+- `type` — `cisa_kev`, `cvelist_v5_delta`, `ghsa`, `nvd_recent`, or `nvd_modified`
+- `min_cvss` — minimum CVSS base score for every provider except `cisa_kev`. NVD uses coarse severity filtering (HIGH, CRITICAL, etc.) server-side, then local filtering enforces the exact float threshold.
 - provider `keywords`, `vendors`, `products` — appended to the top-level defaults for that provider
 - `keywords` — case-insensitive substring matches against title, description, vendor/product names, CWE, and reference URLs
 - `vendors` — case-insensitive vendor-name filter; empty list disables vendor filtering
 - `products` — case-insensitive product-name filter; empty list disables product filtering
+
+For `ghsa`, Horizon automatically reuses `GITHUB_TOKEN` when it is set, matching the existing GitHub scraper behavior.
 
 **NVD API 2.0 limitations**:
 

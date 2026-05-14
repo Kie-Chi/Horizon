@@ -123,6 +123,14 @@
           "products": []
         },
         {
+          "type": "ghsa",
+          "enabled": false,
+          "min_cvss": 7.0,
+          "keywords": [],
+          "vendors": [],
+          "products": []
+        },
+        {
           "type": "nvd_recent",
           "enabled": false,
           "min_cvss": 7.0,
