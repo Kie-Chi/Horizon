@@ -1073,12 +1073,20 @@ class TestURLValidation:
         del os.environ[_TEST_URL_ENV]
 
     def test_no_hostname_raises_value_error(self):
-        """Bare strings and URLs without a hostname raise ValueError."""
-        for bad_url in ["not-a-url", "http://", "://"]:
+        """URLs without a hostname raise ValueError."""
+        os.environ[_TEST_URL_ENV] = "http://"
+        config = WebhookConfig(enabled=True, url_env=_TEST_URL_ENV)
+        with pytest.raises(ValueError, match="no hostname"):
+            WebhookNotifier(config)
+        del os.environ[_TEST_URL_ENV]
+
+    def test_wrong_scheme_raises_value_error(self):
+        """URLs with non-http/https scheme raise ValueError."""
+        for bad_url in ["ftp://example.com", "not-a-url", "://"]:
             os.environ[_TEST_URL_ENV] = bad_url
             config = WebhookConfig(enabled=True, url_env=_TEST_URL_ENV)
             try:
-                with pytest.raises(ValueError, match="no hostname"):
+                with pytest.raises(ValueError, match="http or https"):
                     WebhookNotifier(config)
             finally:
                 del os.environ[_TEST_URL_ENV]
