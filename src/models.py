@@ -195,6 +195,7 @@ class CVEProviderType(str, Enum):
 
     CISA_KEV = "cisa_kev"
     CVELIST_V5_DELTA = "cvelist_v5_delta"
+    GHSA = "ghsa"
     NVD_RECENT = "nvd_recent"
     NVD_MODIFIED = "nvd_modified"
 

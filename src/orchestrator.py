@@ -335,6 +335,8 @@ class HorizonOrchestrator:
             return "CISA KEV"
         if meta.get("provider") == "cvelist_v5_delta":
             return "CVE List V5"
+        if meta.get("provider") == "ghsa":
+            return "GHSA"
         if meta.get("provider") == "nvd_recent":
             return "NVD recent"
         if meta.get("provider") == "nvd_modified":

@@ -143,6 +143,18 @@ def _cvelist_zip_response(entries: list[dict]) -> httpx.Response:
     )
 
 
+def _ghsa_response(entries: list[dict], next_url: str | None = None) -> httpx.Response:
+    headers = {}
+    if next_url:
+        headers["Link"] = f'<{next_url}>; rel="next"'
+    return httpx.Response(
+        200,
+        json=entries,
+        headers=headers,
+        request=httpx.Request("GET", "https://api.github.com/advisories"),
+    )
+
+
 def _kev_entry(**overrides) -> dict:
     base = {
         "cveID": "CVE-2026-0001",
@@ -243,6 +255,35 @@ def _cvelist_entry(**overrides) -> dict:
     return base
 
 
+def _ghsa_entry(**overrides) -> dict:
+    base = {
+        "ghsa_id": "GHSA-abcd-efgh-ijkl",
+        "cve_id": "CVE-2026-0001",
+        "published_at": "2026-05-13T12:00:00Z",
+        "updated_at": "2026-05-14T01:00:00Z",
+        "summary": "OpenSSL certificate validation bypass.",
+        "description": "A crafted certificate chain could bypass validation.",
+        "severity": "high",
+        "html_url": "https://github.com/advisories/GHSA-abcd-efgh-ijkl",
+        "cvss": {
+            "score": 8.8,
+            "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+        },
+        "cwes": [{"cwe_id": "CWE-295", "name": "Improper Certificate Validation"}],
+        "references": [{"url": "https://github.com/advisories/GHSA-abcd-efgh-ijkl"}],
+        "vulnerabilities": [
+            {
+                "package": {
+                    "ecosystem": "pip",
+                    "name": "openssl-helper",
+                }
+            }
+        ],
+    }
+    base.update(overrides)
+    return base
+
+
 class TestCVEKevMapping:
     def test_maps_kev_entry_to_content_item(self):
         provider = _provider(CVEProviderType.CISA_KEV)
@@ -297,6 +338,72 @@ class TestCVENvdMapping:
         assert item.metadata["provider"] == "cvelist_v5_delta"
         assert item.metadata["cvss"] == 8.8
         assert item.metadata["cwe"] == "CWE-295"
+
+    def test_cvelist_retries_next_hour_asset_name_when_expected_name_404s(self):
+        provider = _provider(CVEProviderType.CVELIST_V5_DELTA)
+        tag = "cve_2026-05-14_0800Z"
+        scraper = _make_scraper(
+            _cve_config(provider),
+            [
+                _atom_response([(tag, "2026-05-14T08:00:00Z")]),
+                httpx.Response(
+                    404,
+                    request=httpx.Request(
+                        "GET",
+                        f"https://github.com/CVEProject/cvelistV5/releases/download/{tag}/2026-05-14_delta_CVEs_at_0800Z.zip",
+                    ),
+                ),
+                _cvelist_zip_response([_cvelist_entry()]),
+            ],
+        )
+        since = datetime(2026, 5, 13, tzinfo=timezone.utc)
+
+        result = asyncio.run(scraper.fetch(since))
+
+        assert len(result) == 1
+        assert result[0].metadata["provider"] == "cvelist_v5_delta"
+        requests = [str(call.args[0]) for call in scraper.client.get.await_args_list]
+        assert requests[1].endswith(f"/{tag}/2026-05-14_delta_CVEs_at_0800Z.zip")
+        assert requests[2].endswith(f"/{tag}/2026-05-14_delta_CVEs_at_0900Z.zip")
+
+    def test_maps_ghsa_entry_to_content_item(self):
+        provider = _provider(CVEProviderType.GHSA)
+        scraper = _make_scraper(_cve_config(provider), [_ghsa_response([_ghsa_entry()])])
+        since = datetime(2026, 5, 13, tzinfo=timezone.utc)
+
+        result = asyncio.run(scraper.fetch(since))
+
+        assert len(result) == 1
+        item = result[0]
+        assert item.id == "cve:ghsa:CVE-2026-0001"
+        assert item.author == "GitHub Advisory Database"
+        assert item.metadata["provider"] == "ghsa"
+        assert item.metadata["ghsa_id"] == "GHSA-abcd-efgh-ijkl"
+        assert item.metadata["cvss"] == 8.8
+        assert item.metadata["cwe"] == "CWE-295"
+
+    def test_ghsa_tolerates_non_dict_nested_entries(self):
+        provider = _provider(CVEProviderType.GHSA)
+        scraper = _make_scraper(
+            _cve_config(provider),
+            [
+                _ghsa_response(
+                    [
+                        _ghsa_entry(
+                            vulnerabilities=["pip"],
+                            cwes=["CWE-295"],
+                            references=["https://github.com/advisories/GHSA-abcd-efgh-ijkl"],
+                        )
+                    ]
+                )
+            ],
+        )
+        since = datetime(2026, 5, 13, tzinfo=timezone.utc)
+
+        result = asyncio.run(scraper.fetch(since))
+
+        assert len(result) == 1
+        assert result[0].metadata["provider"] == "ghsa"
 
 
 class TestCVEFiltering:
@@ -380,6 +487,11 @@ class TestCVEFiltering:
         since = datetime(2026, 5, 12, tzinfo=timezone.utc)
         assert len(asyncio.run(scraper.fetch(since))) == 1
 
+    def test_filters_ghsa_by_min_cvss(self):
+        provider = _provider(CVEProviderType.GHSA, min_cvss=9.0)
+        scraper = _make_scraper(_cve_config(provider), [_ghsa_response([_ghsa_entry()])])
+        since = datetime(2026, 5, 13, tzinfo=timezone.utc)
+        assert asyncio.run(scraper.fetch(since)) == []
 
 class TestCVEDeduplication:
     def test_deduplicates_recent_and_modified_same_cve(self):
@@ -439,8 +551,67 @@ class TestCVEDeduplication:
         assert len(result) == 1
         assert result[0].metadata["cve_id"] == "CVE-2026-0100"
 
+    def test_keeps_ghsa_only_advisory_without_cve_alias(self):
+        ghsa = _provider(CVEProviderType.GHSA)
+        scraper = _make_scraper(
+            _cve_config(ghsa),
+            [_ghsa_response([_ghsa_entry(cve_id=None)])],
+        )
+        since = datetime(2026, 5, 13, tzinfo=timezone.utc)
+
+        result = asyncio.run(scraper.fetch(since))
+
+        assert len(result) == 1
+        assert result[0].metadata["ghsa_id"] == "GHSA-abcd-efgh-ijkl"
 
 class TestCVEResilience:
+    def test_cvelist_release_failure_does_not_block_later_releases(self):
+        provider = _provider(CVEProviderType.CVELIST_V5_DELTA)
+        tag_one = "cve_2026-05-14_0800Z"
+        tag_two = "cve_2026-05-14_0900Z"
+        scraper = _make_scraper(
+            _cve_config(provider),
+            [
+                _atom_response(
+                    [
+                        (tag_one, "2026-05-14T08:00:00Z"),
+                        (tag_two, "2026-05-14T09:00:00Z"),
+                    ]
+                ),
+                httpx.Response(
+                    404,
+                    request=httpx.Request(
+                        "GET",
+                        f"https://github.com/CVEProject/cvelistV5/releases/download/{tag_one}/2026-05-14_delta_CVEs_at_0800Z.zip",
+                    ),
+                ),
+                httpx.Response(
+                    404,
+                    request=httpx.Request(
+                        "GET",
+                        f"https://github.com/CVEProject/cvelistV5/releases/download/{tag_one}/2026-05-14_delta_CVEs_at_0900Z.zip",
+                    ),
+                ),
+                _cvelist_zip_response(
+                    [
+                        _cvelist_entry(
+                            cveMetadata={
+                                "cveId": "CVE-2026-0200",
+                                "datePublished": "2026-05-14T09:10:00.000Z",
+                                "dateUpdated": "2026-05-14T09:10:00.000Z",
+                            }
+                        )
+                    ]
+                ),
+            ],
+        )
+        since = datetime(2026, 5, 13, tzinfo=timezone.utc)
+
+        result = asyncio.run(scraper.fetch(since))
+
+        assert len(result) == 1
+        assert result[0].metadata["cve_id"] == "CVE-2026-0200"
+
     def test_provider_failure_does_not_block_others(self):
         kev = _provider(CVEProviderType.CISA_KEV)
         recent = _provider(CVEProviderType.NVD_RECENT)
@@ -604,6 +775,18 @@ class TestNvdApiFeatures:
         ]
         assert len(nvd_calls) > 0
 
+    def test_ghsa_uses_github_token_when_available(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "gh-test-token")
+        provider = _provider(CVEProviderType.GHSA)
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.get.return_value = _ghsa_response([_ghsa_entry()])
+        scraper = CVEScraper(_cve_config(provider), client)
+
+        asyncio.run(scraper.fetch(datetime(2026, 5, 13, tzinfo=timezone.utc)))
+
+        headers = client.get.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "token gh-test-token"
+
     def test_fetches_multiple_pages_when_more_results_exist(self):
         """When totalResults exceeds one page, the scraper should continue paging."""
         provider = _provider(CVEProviderType.NVD_RECENT)
@@ -748,3 +931,9 @@ class TestOrchestratorIntegration:
         item.metadata = {"provider": "nvd_modified"}
         item.author = "NVD"
         assert HorizonOrchestrator._sub_source_label(item) == "NVD modified"
+
+    def test_sub_source_label_maps_ghsa_provider_name(self):
+        item = MagicMock()
+        item.metadata = {"provider": "ghsa"}
+        item.author = "GitHub Advisory Database"
+        assert HorizonOrchestrator._sub_source_label(item) == "GHSA"

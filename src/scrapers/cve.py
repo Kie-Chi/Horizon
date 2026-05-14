@@ -11,7 +11,7 @@ import re
 import time
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
@@ -29,6 +29,7 @@ CISA_KEV_JSON_URL = (
     "https://www.cisa.gov/sites/default/files/feeds/"
     "known_exploited_vulnerabilities.json"
 )
+GHSA_API_URL = "https://api.github.com/advisories"
 NVD_API_BASE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 NVD_CVE_URL = "https://nvd.nist.gov/vuln/detail/{cve_id}"
 CISA_KEV_CATALOG_URL = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
@@ -76,6 +77,7 @@ class CVEScraper(BaseScraper):
         self.console = console or Console()
         self._state = self._load_state()
         self._nvd_api_key = self._resolve_nvd_api_key()
+        self._github_token = self._resolve_github_token()
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -85,7 +87,8 @@ class CVEScraper(BaseScraper):
         if not self.cve_config.enabled:
             return []
 
-        items_by_cve: Dict[str, ContentItem] = {}
+        items_by_key: Dict[str, ContentItem] = {}
+        merged_items: list[ContentItem] = []
         since_utc = self._ensure_utc(since)
         providers = [provider for provider in self.cve_config.providers if provider.enabled]
         tasks = [self._fetch_provider(provider, since_utc) for provider in providers]
@@ -96,17 +99,25 @@ class CVEScraper(BaseScraper):
                 logger.warning("CVE provider %s failed: %s", provider.type.value, result)
                 continue
             for item in result:
-                cve_id = str(item.metadata.get("cve_id") or "")
-                if not cve_id:
-                    continue
-                current = items_by_cve.get(cve_id)
+                item_keys = self._dedupe_keys(item)
+                current = next(
+                    (items_by_key[key] for key in item_keys if key in items_by_key),
+                    None,
+                )
                 if current is None:
-                    items_by_cve[cve_id] = item
+                    merged_items.append(item)
+                    for key in item_keys:
+                        items_by_key[key] = item
                     continue
-                items_by_cve[cve_id] = self._merge_duplicate(current, item)
+                merged = self._merge_duplicate(current, item)
+                if merged is not current:
+                    current_index = merged_items.index(current)
+                    merged_items[current_index] = merged
+                for key in self._dedupe_keys(current) + item_keys + self._dedupe_keys(merged):
+                    items_by_key[key] = merged
 
         self._save_state()
-        return list(items_by_cve.values())
+        return merged_items
 
     # ------------------------------------------------------------------
     # Provider dispatch
@@ -119,6 +130,7 @@ class CVEScraper(BaseScraper):
         handlers = {
             CVEProviderType.CISA_KEV: self._fetch_cisa_kev,
             CVEProviderType.CVELIST_V5_DELTA: self._fetch_cvelist_v5_delta,
+            CVEProviderType.GHSA: self._fetch_ghsa,
             CVEProviderType.NVD_RECENT: self._fetch_nvd_api,
             CVEProviderType.NVD_MODIFIED: self._fetch_nvd_api,
         }
@@ -140,7 +152,7 @@ class CVEScraper(BaseScraper):
         return items
 
     # ------------------------------------------------------------------
-    # CISA KEV (unchanged — already a JSON API, not a bulk feed)
+    # CISA KEV
     # ------------------------------------------------------------------
 
     async def _fetch_cisa_kev(
@@ -234,6 +246,66 @@ class CVEScraper(BaseScraper):
         return self._provider_state(provider)["runtime"]
 
     # ------------------------------------------------------------------
+    # GHSA
+    # ------------------------------------------------------------------
+
+    async def _fetch_ghsa(
+        self, provider: CVEProviderConfig, since_utc: datetime
+    ) -> List[ContentItem]:
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self._github_token:
+            headers["Authorization"] = f"token {self._github_token}"
+        url: Optional[str] = f"{GHSA_API_URL}?per_page=100&sort=updated&direction=desc"
+        advisories: list[dict[str, Any]] = []
+
+        while url:
+            response = await self.client.get(
+                url,
+                headers=headers,
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+            page_entries = response.json()
+            if not isinstance(page_entries, list):
+                break
+
+            reached_cutoff = False
+            for entry in page_entries:
+                modified_at = self._parse_datetime(entry.get("updated_at"))
+                published_at = self._parse_datetime(entry.get("published_at"))
+                compare_dt = modified_at or published_at
+                if compare_dt is None:
+                    continue
+                if compare_dt <= since_utc:
+                    reached_cutoff = True
+                    continue
+                advisories.append(entry)
+
+            if reached_cutoff:
+                break
+            next_url = response.links.get("next", {}).get("url")
+            url = str(next_url) if next_url else None
+
+        parse_started_at = time.monotonic()
+        items: List[ContentItem] = []
+        for entry in advisories:
+            item = self._ghsa_entry_to_item(entry, provider, since_utc)
+            if item is not None:
+                items.append(item)
+
+        logger.info(
+            "CVE provider %s parsed %d raw GHSA records into %d items in %.2fs",
+            provider.type.value,
+            len(advisories),
+            len(items),
+            time.monotonic() - parse_started_at,
+        )
+        return items
+
+    # ------------------------------------------------------------------
     # CVE List V5 delta releases
     # ------------------------------------------------------------------
 
@@ -259,9 +331,24 @@ class CVEScraper(BaseScraper):
             )
         ]
 
+        release_results = await asyncio.gather(
+            *[self._fetch_cvelist_release_records(release) for release in pending_releases],
+            return_exceptions=True,
+        )
+
         items: List[ContentItem] = []
-        for release in pending_releases:
-            for entry in await self._fetch_cvelist_release_records(release):
+        for release, release_result in zip(pending_releases, release_results):
+            if isinstance(release_result, httpx.HTTPStatusError):
+                logger.warning(
+                    "Skipping cvelistV5 release %s after asset lookup failed: %s",
+                    release.tag,
+                    release_result,
+                )
+                continue
+            if isinstance(release_result, Exception):
+                raise release_result
+
+            for entry in release_result:
                 item = self._cvelist_entry_to_item(
                     entry, provider, since_utc, release.updated_at
                 )
@@ -308,13 +395,7 @@ class CVEScraper(BaseScraper):
     async def _fetch_cvelist_release_records(
         self, release: CVEReleaseEntry
     ) -> list[dict[str, Any]]:
-        url = self._build_cvelist_release_asset_url(release.tag)
-        response = await self.client.get(
-            url,
-            timeout=CVELIST_V5_TIMEOUT,
-            follow_redirects=True,
-        )
-        response.raise_for_status()
+        response = await self._download_cvelist_release_asset(release.tag)
 
         records: list[dict[str, Any]] = []
         with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
@@ -330,17 +411,46 @@ class CVEScraper(BaseScraper):
                         logger.warning("Skipping invalid cvelistV5 record %s: %s", name, exc)
         return records
 
+    async def _download_cvelist_release_asset(self, tag: str) -> httpx.Response:
+        last_error: Optional[httpx.HTTPStatusError] = None
+        for url in self._build_cvelist_release_asset_urls(tag):
+            response = await self.client.get(
+                url,
+                timeout=CVELIST_V5_TIMEOUT,
+                follow_redirects=True,
+            )
+            try:
+                response.raise_for_status()
+                return response
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                if response.status_code != 404:
+                    raise
+        if last_error is not None:
+            raise last_error
+        raise ValueError(f"Unable to resolve cvelistV5 asset URL for release {tag}")
+
     @staticmethod
-    def _build_cvelist_release_asset_url(tag: str) -> str:
+    def _build_cvelist_release_asset_urls(tag: str) -> list[str]:
         match = CVELIST_V5_TAG_RE.match(tag)
         if match is None:
             raise ValueError(f"Unsupported cvelistV5 release tag format: {tag}")
         day, hour = match.groups()
-        asset_name = f"{day}_delta_CVEs_at_{hour}.zip"
-        return CVELIST_V5_RELEASE_DOWNLOAD_URL.format(tag=tag, asset_name=asset_name)
+        release_hour = datetime.strptime(f"{day}T{hour}", "%Y-%m-%dT%H%MZ").replace(
+            tzinfo=timezone.utc
+        )
+        candidate_hours = [release_hour, release_hour + timedelta(hours=1)]
+        urls: list[str] = []
+        for candidate in candidate_hours:
+            asset_hour = candidate.strftime("%H00Z")
+            asset_name = f"{day}_delta_CVEs_at_{asset_hour}.zip"
+            urls.append(
+                CVELIST_V5_RELEASE_DOWNLOAD_URL.format(tag=tag, asset_name=asset_name)
+            )
+        return urls
 
     # ------------------------------------------------------------------
-    # NVD API 2.0 (replaces bulk feed download)
+    # NVD API
     # ------------------------------------------------------------------
 
     async def _fetch_nvd_api(
@@ -461,11 +571,6 @@ class CVEScraper(BaseScraper):
     @staticmethod
     def _cvss_to_severity(min_cvss: float) -> Optional[str]:
         """Map a float CVSS threshold to the coarsest NVD API severity level.
-
-        The API only accepts LOW / MEDIUM / HIGH / CRITICAL.
-        We pick the level whose lower bound is <= min_cvss so that
-        the server-side filter is not too aggressive; precise float
-        filtering still happens locally in _nvd_entry_to_item.
         """
         for threshold, severity in sorted(CVSS_SEVERITY_MAP.items(), reverse=True):
             if min_cvss >= threshold:
@@ -478,8 +583,13 @@ class CVEScraper(BaseScraper):
             return None
         return os.environ.get(self.cve_config.nvd_api_key_env)
 
+    @staticmethod
+    def _resolve_github_token() -> Optional[str]:
+        """Resolve the GitHub token from the standard project environment variable."""
+        return os.environ.get("GITHUB_TOKEN")
+
     # ------------------------------------------------------------------
-    # CISA KEV entry parsing (unchanged)
+    # CISA KEV entry parsing
     # ------------------------------------------------------------------
 
     def _kev_entry_to_item(
@@ -628,6 +738,87 @@ class CVEScraper(BaseScraper):
             author="CVE List V5",
             published_at=compare_dt,
             metadata=self._compact_dict(item_metadata),
+        )
+
+    # ------------------------------------------------------------------
+    # GHSA entry parsing
+    # ------------------------------------------------------------------
+
+    def _ghsa_entry_to_item(
+        self, entry: dict[str, Any], provider: CVEProviderConfig, since_utc: datetime
+    ) -> Optional[ContentItem]:
+        ghsa_id = str(entry.get("ghsa_id") or "").strip()
+        if not ghsa_id:
+            return None
+
+        published = self._parse_datetime(entry.get("published_at"))
+        last_modified = self._parse_datetime(entry.get("updated_at"))
+        compare_dt = last_modified or published
+        if compare_dt is None or compare_dt <= since_utc:
+            return None
+
+        cve_id = str(entry.get("cve_id") or "").strip() or None
+        summary = str(entry.get("summary") or "").strip()
+        description = str(entry.get("description") or "").strip()
+        vendors, products = self._extract_ghsa_products(entry.get("vulnerabilities", []))
+        cvss_score, cvss_vector, severity = self._extract_ghsa_cvss(entry)
+        cwe = self._extract_ghsa_cwe(entry.get("cwes", []))
+        references = self._extract_ghsa_reference_urls(entry.get("references", []))
+
+        if provider.min_cvss is not None and (
+            cvss_score is None or cvss_score < provider.min_cvss
+        ):
+            return None
+        if not self._matches_filters(
+            provider=provider,
+            title=cve_id or ghsa_id,
+            description=summary or description,
+            vendors=vendors,
+            products=products,
+            cwe=cwe,
+            references=references,
+        ):
+            return None
+
+        primary_id = cve_id or ghsa_id
+        label_parts = [
+            part
+            for part in [vendors[0] if vendors else "", products[0] if products else ""]
+            if part
+        ]
+        primary_label = " / ".join(label_parts) if label_parts else "Unspecified"
+        score_label = f"CVSS {cvss_score:.1f}" if cvss_score is not None else "CVSS n/a"
+        content_parts = [
+            description or summary,
+            f"Package ecosystems: {', '.join(vendors)}" if vendors else "",
+            f"Packages: {', '.join(products)}" if products else "",
+            f"CWE: {cwe}" if cwe else "",
+            f"References: {', '.join(references[:5])}" if references else "",
+        ]
+        metadata = {
+            "provider": provider.type.value,
+            "cve_id": cve_id,
+            "ghsa_id": ghsa_id,
+            "cvss": cvss_score,
+            "cvss_vector": cvss_vector,
+            "severity": severity,
+            "cwe": cwe or None,
+            "vendors": vendors,
+            "products": products,
+            "published": entry.get("published_at"),
+            "last_modified": entry.get("updated_at"),
+            "references": references,
+            "kev": False,
+        }
+        return ContentItem(
+            id=self._generate_id("cve", "ghsa", primary_id),
+            source_type=self.SOURCE_TYPE,
+            title=f"{primary_id} | {primary_label} | {score_label}",
+            url=str(entry.get("html_url") or f"https://github.com/advisories/{ghsa_id}"),
+            content="\n".join(part for part in content_parts if part),
+            author="GitHub Advisory Database",
+            published_at=compare_dt,
+            metadata=self._compact_dict(metadata),
         )
 
     # ------------------------------------------------------------------
@@ -880,6 +1071,58 @@ class CVEScraper(BaseScraper):
         return [url for url in urls if url]
 
     @staticmethod
+    def _extract_ghsa_products(vulnerabilities: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+        vendors: list[str] = []
+        products: list[str] = []
+        for vulnerability in vulnerabilities or []:
+            if not isinstance(vulnerability, dict):
+                continue
+            package = vulnerability.get("package", {})
+            if not isinstance(package, dict):
+                continue
+            ecosystem = str(package.get("ecosystem") or "").strip()
+            name = str(package.get("name") or "").strip()
+            if ecosystem:
+                vendors.append(ecosystem)
+            if name:
+                products.append(name)
+        return CVEScraper._unique(vendors), CVEScraper._unique(products)
+
+    @staticmethod
+    def _extract_ghsa_cvss(
+        entry: dict[str, Any]
+    ) -> tuple[Optional[float], Optional[str], Optional[str]]:
+        cvss = entry.get("cvss")
+        if not isinstance(cvss, dict):
+            return None, None, None
+        score = CVEScraper._safe_float(cvss.get("score"))
+        vector = str(cvss.get("vector_string") or "").strip() or None
+        severity = str(entry.get("severity") or "").strip() or None
+        return score, vector, severity
+
+    @staticmethod
+    def _extract_ghsa_cwe(cwes: list[dict[str, Any]]) -> str:
+        for cwe in cwes or []:
+            if not isinstance(cwe, dict):
+                continue
+            cwe_id = str(cwe.get("cwe_id") or "").strip()
+            if cwe_id:
+                return cwe_id
+            name = str(cwe.get("name") or "").strip()
+            if name:
+                return name
+        return ""
+
+    @staticmethod
+    def _extract_ghsa_reference_urls(references: list[dict[str, Any]]) -> list[str]:
+        urls = [
+            str(ref.get("url") or "").strip()
+            for ref in references or []
+            if isinstance(ref, dict)
+        ]
+        return [url for url in urls if url]
+
+    @staticmethod
     def _extract_references(entry: dict[str, Any]) -> list[str]:
         refs = entry.get("references")
         if isinstance(refs, list):
@@ -945,8 +1188,23 @@ class CVEScraper(BaseScraper):
         return [term.strip().lower() for term in merged if term.strip()]
 
     # ------------------------------------------------------------------
-    # Merge / dedup logic (unchanged)
+    # Merge / dedup logic
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _dedupe_keys(item: ContentItem) -> list[str]:
+        metadata = item.metadata
+        keys: list[str] = []
+        for key in ("cve_id", "ghsa_id"):
+            value = str(metadata.get(key) or "").strip()
+            if value:
+                keys.append(value)
+        aliases = metadata.get("aliases")
+        if isinstance(aliases, list):
+            keys.extend(str(alias).strip() for alias in aliases if str(alias).strip())
+        if not keys:
+            keys.append(item.id)
+        return CVEScraper._unique(keys)
 
     def _merge_duplicate(self, current: ContentItem, incoming: ContentItem) -> ContentItem:
         current_priority = self._provider_priority(str(current.metadata.get("provider") or ""))
@@ -1001,8 +1259,9 @@ class CVEScraper(BaseScraper):
         order = {
             CVEProviderType.CISA_KEV.value: 0,
             CVEProviderType.CVELIST_V5_DELTA.value: 1,
-            CVEProviderType.NVD_RECENT.value: 2,
-            CVEProviderType.NVD_MODIFIED.value: 3,
+            CVEProviderType.GHSA.value: 2,
+            CVEProviderType.NVD_RECENT.value: 3,
+            CVEProviderType.NVD_MODIFIED.value: 4,
         }
         return order.get(provider, 99)
 
@@ -1024,6 +1283,15 @@ class CVEScraper(BaseScraper):
     @staticmethod
     def _compact_dict(values: dict[str, Any]) -> dict[str, Any]:
         return {key: value for key, value in values.items() if value is not None and value != []}
+
+    @staticmethod
+    def _safe_float(value: Any) -> Optional[float]:
+        try:
+            if value in (None, ""):
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     # ------------------------------------------------------------------
     # State persistence (only used for CISA_KEV caching now)
