@@ -4,7 +4,15 @@ import json
 import os
 from pathlib import Path
 
-from src.mcp.horizon_adapter import _load_mcp_secrets, resolve_config_path, resolve_horizon_path
+from src.mcp.horizon_adapter import (
+    _load_mcp_secrets,
+    apply_source_filter,
+    load_config,
+    load_runtime,
+    resolve_config_path,
+    resolve_horizon_path,
+)
+from src.models import AIProvider, Config
 
 
 def test_resolve_horizon_path_accepts_explicit_repo() -> None:
@@ -16,7 +24,9 @@ def test_resolve_horizon_path_accepts_explicit_repo() -> None:
 def test_resolve_config_path_defaults_to_repo_data_config() -> None:
     repo_root = Path(__file__).resolve().parents[1]
 
-    assert resolve_config_path(repo_root) == (repo_root / "data" / "config.json").resolve()
+    assert (
+        resolve_config_path(repo_root) == (repo_root / "data" / "config.json").resolve()
+    )
 
 
 def test_load_mcp_secrets_loads_generic_env_keys(tmp_path: Path, monkeypatch) -> None:
@@ -44,3 +54,56 @@ def test_load_mcp_secrets_loads_generic_env_keys(tmp_path: Path, monkeypatch) ->
     assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-test"
     assert os.environ["CUSTOM_TOKEN"] == "token-123"
     assert "lowercase" not in os.environ
+
+
+def test_load_config_expands_env_vars(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "ai": {
+                    "provider": "openai",
+                    "model": "test-model",
+                    "api_key_env": "OPENAI_API_KEY",
+                    "base_url": "${TEST_BASE_URL}/v1",
+                },
+                "sources": {},
+                "filtering": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEST_BASE_URL", "https://api.example.com")
+    runtime = load_runtime(Path(__file__).resolve().parents[1])
+
+    config = load_config(runtime, config_path)
+
+    assert config.ai.base_url == "https://api.example.com/v1"
+
+
+def test_apply_source_filter_handles_twitter_and_openbb() -> None:
+    config = Config.model_validate(
+        {
+            "ai": {
+                "provider": AIProvider.OPENAI,
+                "model": "test-model",
+                "api_key_env": "OPENAI_API_KEY",
+            },
+            "sources": {
+                "twitter": {"enabled": True, "users": ["openai"]},
+                "openbb": {
+                    "enabled": True,
+                    "watchlists": [{"name": "ai", "symbols": ["NVDA"]}],
+                },
+            },
+            "filtering": {},
+        }
+    )
+
+    filtered, chosen, unknown = apply_source_filter(config, ["twitter"])
+
+    assert chosen == ["twitter"]
+    assert unknown == []
+    assert filtered.sources.twitter.enabled is True
+    assert filtered.sources.openbb.enabled is False
+    assert filtered.sources.openbb.watchlists == []

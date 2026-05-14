@@ -79,6 +79,24 @@ def test_send_daily_summary_falls_back_to_email_address_for_smtp_login(monkeypat
     assert FakeSMTP.instances[0].login_calls == [("noreply@example.com", "secret")]
 
 
+def test_send_daily_summary_escapes_raw_html(monkeypatch):
+    monkeypatch.setenv("EMAIL_PASSWORD", "secret")
+    monkeypatch.setattr("src.services.email.smtplib.SMTP_SSL", FakeSMTP)
+    FakeSMTP.instances = []
+
+    manager = EmailManager(_email_config())
+
+    manager.send_daily_summary(
+        "# Hello\n\n<img src=x onerror=alert(1)>", "Daily", ["user@example.com"]
+    )
+
+    html_part = FakeSMTP.instances[0].messages[0].get_payload()[1]
+    html_body = html_part.get_payload(decode=True).decode()
+    assert "<h1>Hello</h1>" in html_body
+    assert "<img src=x" not in html_body
+    assert "&lt;img src=x" in html_body
+
+
 def test_check_subscriptions_skips_imap_when_disabled(monkeypatch):
     monkeypatch.setenv("EMAIL_PASSWORD", "secret")
     monkeypatch.setattr("src.services.email.imaplib.IMAP4_SSL", FakeIMAP)

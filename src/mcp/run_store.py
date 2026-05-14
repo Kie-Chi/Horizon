@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,8 @@ STAGES = {
     "filtered": "filtered_items.json",
     "enriched": "enriched_items.json",
 }
+RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+LANGUAGE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 @dataclass
@@ -29,15 +32,17 @@ class RunStore:
 
     def create_run(self, run_id: str | None = None) -> str:
         run_id = run_id or self._make_run_id()
-        run_dir = self.root / run_id
+        run_dir = self._run_path(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
         meta_path = run_dir / "meta.json"
         if not meta_path.exists():
-            self.write_json(run_id, "meta.json", {"run_id": run_id, "created_at": self._utc_now()})
+            self.write_json(
+                run_id, "meta.json", {"run_id": run_id, "created_at": self._utc_now()}
+            )
         return run_id
 
     def run_dir(self, run_id: str) -> Path:
-        path = self.root / run_id
+        path = self._run_path(run_id)
         if not path.exists():
             raise FileNotFoundError(f"Run not found: {run_id}")
         return path
@@ -52,13 +57,13 @@ class RunStore:
         return self.read_json(run_id, self._stage_file(stage))
 
     def save_summary(self, run_id: str, language: str, markdown: str) -> Path:
-        filename = f"summary-{language}.md"
+        filename = self._summary_file(language)
         path = self.run_dir(run_id) / filename
         path.write_text(markdown, encoding="utf-8")
         return path
 
     def load_summary(self, run_id: str, language: str) -> str:
-        path = self.run_dir(run_id) / f"summary-{language}.md"
+        path = self.run_dir(run_id) / self._summary_file(language)
         if not path.exists():
             raise FileNotFoundError(f"Summary not found: run={run_id} lang={language}")
         return path.read_text(encoding="utf-8")
@@ -120,8 +125,26 @@ class RunStore:
     def _stage_file(stage: str) -> str:
         if stage not in STAGES:
             supported = ", ".join(sorted(STAGES))
-            raise ValueError(f"Unsupported stage '{stage}', expected one of: {supported}")
+            raise ValueError(
+                f"Unsupported stage '{stage}', expected one of: {supported}"
+            )
         return STAGES[stage]
+
+    def _run_path(self, run_id: str) -> Path:
+        if not RUN_ID_RE.fullmatch(run_id) or ".." in run_id:
+            raise ValueError("Invalid run_id")
+
+        root = self.root.resolve()
+        path = (self.root / run_id).resolve()
+        if not path.is_relative_to(root):
+            raise ValueError("Invalid run_id")
+        return path
+
+    @staticmethod
+    def _summary_file(language: str) -> str:
+        if not LANGUAGE_RE.fullmatch(language):
+            raise ValueError("Invalid summary language")
+        return f"summary-{language}.md"
 
     @staticmethod
     def _make_run_id() -> str:

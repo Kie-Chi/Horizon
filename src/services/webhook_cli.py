@@ -59,7 +59,9 @@ def _make_test_items() -> list[ContentItem]:
     ]
 
 
-def _preview_message(notifier: WebhookNotifier, title: str, body: str, variables: dict, border_style: str) -> None:
+def _preview_message(
+    notifier: WebhookNotifier, title: str, body: str, variables: dict, border_style: str
+) -> None:
     """Render one dry-run preview using the same logic as the real sender."""
     display_body = body if len(body) <= 3000 else body[:3000] + "\n... (truncated)"
     console.print(Panel(display_body, title=title, border_style=border_style))
@@ -70,13 +72,21 @@ def _preview_message(notifier: WebhookNotifier, title: str, body: str, variables
         rendered_body = preview["body"]
         if len(rendered_body) > 3000:
             rendered_body = rendered_body[:3000] + "\n... (truncated)"
-        panel_title = "Request Body (JSON)" if preview["headers"]["Content-Type"] == "application/json" else "Request Body"
+        panel_title = (
+            "Request Body (JSON)"
+            if preview["headers"]["Content-Type"] == "application/json"
+            else "Request Body"
+        )
         console.print(Panel(rendered_body, title=panel_title, border_style="green"))
     if preview["headers"]:
-        console.print(f"  [cyan]Headers:[/cyan] {json.dumps(preview['headers'], ensure_ascii=False)}")
+        console.print(
+            f"  [cyan]Headers:[/cyan] {json.dumps(preview['headers'], ensure_ascii=False)}"
+        )
 
 
-async def _run_test(webhook_config, lang: str, dry_run: bool, delivery_override: str | None = None) -> None:
+async def _run_test(
+    webhook_config, lang: str, dry_run: bool, delivery_override: str | None = None
+) -> None:
     """Execute the webhook test."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     items = _make_test_items()
@@ -85,7 +95,9 @@ async def _run_test(webhook_config, lang: str, dry_run: bool, delivery_override:
 
     effective_config = webhook_config
     if delivery_override:
-        effective_config = webhook_config.model_copy(update={"delivery": delivery_override})
+        effective_config = webhook_config.model_copy(
+            update={"delivery": delivery_override}
+        )
 
     notifier = WebhookNotifier(effective_config, console=console)
 
@@ -114,7 +126,11 @@ async def _run_test(webhook_config, lang: str, dry_run: bool, delivery_override:
             return
 
         for index, message in enumerate(messages, start=1):
-            label = "Message" if message["message_kind"] == "summary" else f"Message {index}"
+            label = (
+                "Message"
+                if message["message_kind"] == "summary"
+                else f"Message {index}"
+            )
             console.print(f"\n[bold]── {label}: {message['message_kind']} ──[/bold]")
             _preview_message(
                 notifier=notifier,
@@ -169,7 +185,9 @@ def main() -> None:
             config = storage.load_config()
         except FileNotFoundError:
             console.print("[bold red]Configuration file not found![/bold red]")
-            console.print("Run [bold cyan]uv run horizon-wizard[/bold cyan] to set up your configuration.")
+            console.print(
+                "Run [bold cyan]uv run horizon-wizard[/bold cyan] to set up your configuration."
+            )
             sys.exit(1)
         except ConfigError as e:
             console.print(f"[bold red]Error loading configuration: {e}[/bold red]")
@@ -177,7 +195,9 @@ def main() -> None:
 
         if not config.webhook or not config.webhook.enabled:
             console.print("[yellow]Webhook is not enabled in config.json.[/yellow]")
-            console.print("Set [cyan]webhook.enabled = true[/cyan] in data/config.json to enable it.")
+            console.print(
+                "Set [cyan]webhook.enabled = true[/cyan] in data/config.json to enable it."
+            )
             sys.exit(1)
 
         lang = args.lang or (config.ai.languages[0] if config.ai.languages else "en")
@@ -189,6 +209,7 @@ def main() -> None:
     except Exception as e:
         console.print(f"\n[bold red]Error: {e}[/bold red]")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 

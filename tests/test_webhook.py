@@ -19,6 +19,8 @@ from src.services.webhook import (
     _truncate,
     _isjson,
     _extract_headers,
+    redact_headers,
+    redact_url,
 )
 from src.ai.summarizer import DailySummarizer
 
@@ -72,9 +74,7 @@ class TestRenderDictAndList:
             "card": {
                 "schema": "2.0",
                 "header": {"title": "Horizon #{date}"},
-                "body": {
-                    "elements": [{"tag": "markdown", "content": "#{summary}"}]
-                },
+                "body": {"elements": [{"tag": "markdown", "content": "#{summary}"}]},
             },
         }
         variables = {"date": "2026-04-24", "summary": "## AI News\nLine 1"}
@@ -262,9 +262,11 @@ class TestWebhookPreview:
         )
         notifier = WebhookNotifier(config)
 
-        preview = notifier.build_preview({
-            "summary": "<details><summary>References</summary><ul><li><a href=\"https://example.com\">Example</a></li></ul></details>",
-        })
+        preview = notifier.build_preview(
+            {
+                "summary": '<details><summary>References</summary><ul><li><a href="https://example.com">Example</a></li></ul></details>',
+            }
+        )
 
         assert preview["url"] == _TEST_URL
         assert "**References**" in preview["body"]
@@ -272,20 +274,26 @@ class TestWebhookPreview:
         del os.environ[_TEST_URL_ENV]
 
     def test_build_preview_uses_request_body_override(self):
-        os.environ[_TEST_URL_ENV] = _TEST_URL
+        os.environ[_TEST_URL_ENV] = "https://example.com/webhook?token=secret"
         config = WebhookConfig(
             enabled=True,
             url_env=_TEST_URL_ENV,
             request_body={"content": "configured"},
+            headers="Authorization: Bearer secret\nX-Trace: ok",
         )
         notifier = WebhookNotifier(config)
 
-        preview = notifier.build_preview({
-            "_request_body_override": {"content": "override"},
-        })
+        preview = notifier.build_preview(
+            {
+                "_request_body_override": {"content": "override"},
+            }
+        )
 
         parsed = json.loads(preview["body"])
         assert parsed["content"] == "override"
+        assert preview["url"] == _TEST_URL
+        assert preview["headers"]["Authorization"] == "<redacted>"
+        assert preview["headers"]["X-Trace"] == "ok"
         assert preview["headers"]["Content-Type"] == "application/json"
         del os.environ[_TEST_URL_ENV]
 
@@ -339,6 +347,20 @@ class TestExtractHeaders:
     def test_invalid_line(self):
         result = _extract_headers("NoColonHere\nValid: yes")
         assert result == {"Valid": "yes"}
+
+
+class TestWebhookRedaction:
+    def test_redact_url_removes_query_and_fragment(self):
+        assert (
+            redact_url("https://example.com/hook?token=secret#frag")
+            == "https://example.com/hook"
+        )
+
+    def test_redact_headers_masks_sensitive_values(self):
+        assert redact_headers({"Authorization": "Bearer secret", "X-Trace": "ok"}) == {
+            "Authorization": "<redacted>",
+            "X-Trace": "ok",
+        }
 
 
 # ── WebhookNotifier ──
@@ -505,7 +527,10 @@ class TestWebhookNotifier:
             call_kwargs = mock_client.post.call_args[1]
             # json.loads fails on the rendered string, so content-type
             # falls back to form-urlencoded
-            assert call_kwargs["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+            assert (
+                call_kwargs["headers"]["Content-Type"]
+                == "application/x-www-form-urlencoded"
+            )
         del os.environ[_TEST_URL_ENV]
 
     def test_post_request_with_form_body(self):
@@ -532,7 +557,10 @@ class TestWebhookNotifier:
             mock_client.post.assert_called_once()
 
             call_kwargs = mock_client.post.call_args[1]
-            assert call_kwargs["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+            assert (
+                call_kwargs["headers"]["Content-Type"]
+                == "application/x-www-form-urlencoded"
+            )
         del os.environ[_TEST_URL_ENV]
 
     def test_custom_headers(self):
@@ -591,7 +619,9 @@ class TestWebhookNotifier:
             mock_client.__aexit__ = AsyncMock(return_value=False)
             mock_client_cls.return_value = mock_client
 
-            _run_async(notifier.notify({"date": "2026-04-24", "summary": "## News\nLine 1"}))
+            _run_async(
+                notifier.notify({"date": "2026-04-24", "summary": "## News\nLine 1"})
+            )
             mock_client.post.assert_called_once()
 
             call_kwargs = mock_client.post.call_args[1]
@@ -633,6 +663,31 @@ class TestWebhookNotifier:
             assert parsed["content"] == summary
         del os.environ[_TEST_URL_ENV]
 
+    def test_request_body_override_sends_post_without_configured_body(self):
+        os.environ[_TEST_URL_ENV] = _TEST_URL
+        config = WebhookConfig(enabled=True, url_env=_TEST_URL_ENV)
+        notifier = WebhookNotifier(config)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            _run_async(
+                notifier.notify({"_request_body_override": {"content": "override"}})
+            )
+
+        mock_client.post.assert_called_once()
+        body = json.loads(mock_client.post.call_args[1]["content"].decode("utf-8"))
+        assert body == {"content": "override"}
+        del os.environ[_TEST_URL_ENV]
+
     def test_http_error_logged(self):
         os.environ[_TEST_URL_ENV] = _TEST_URL
         config = WebhookConfig(
@@ -643,7 +698,9 @@ class TestWebhookNotifier:
 
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
-            mock_client.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
+            mock_client.get = AsyncMock(
+                side_effect=httpx.ConnectError("Connection refused")
+            )
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)
             mock_client_cls.return_value = mock_client
@@ -729,14 +786,16 @@ class TestSendDailySummary:
         summary = "# Horizon Daily\nTest summary"
 
         with patch.object(notifier, "notify", new_callable=AsyncMock) as mock_notify:
-            _run_async(notifier.send_daily_summary(
-                summary=summary,
-                important_items=items,
-                all_items_count=10,
-                date="2026-04-24",
-                lang="en",
-                summarizer=summarizer,
-            ))
+            _run_async(
+                notifier.send_daily_summary(
+                    summary=summary,
+                    important_items=items,
+                    all_items_count=10,
+                    date="2026-04-24",
+                    lang="en",
+                    summarizer=summarizer,
+                )
+            )
             mock_notify.assert_called_once()
             vars = mock_notify.call_args[0][0]
             assert vars["message_kind"] == "summary"
@@ -761,14 +820,16 @@ class TestSendDailySummary:
         items = [_make_item()]
 
         with patch.object(notifier, "notify", new_callable=AsyncMock) as mock_notify:
-            _run_async(notifier.send_daily_summary(
-                summary="## 测试摘要",
-                important_items=items,
-                all_items_count=5,
-                date="2026-04-24",
-                lang="zh",
-                summarizer=summarizer,
-            ))
+            _run_async(
+                notifier.send_daily_summary(
+                    summary="## 测试摘要",
+                    important_items=items,
+                    all_items_count=5,
+                    date="2026-04-24",
+                    lang="zh",
+                    summarizer=summarizer,
+                )
+            )
             vars = mock_notify.call_args[0][0]
             assert vars["message_title"] == "Horizon 2026-04-24 日报"
             assert vars["language"] == "zh"
@@ -784,18 +845,23 @@ class TestSendDailySummary:
         )
         notifier = WebhookNotifier(config)
         summarizer = DailySummarizer()
-        items = [_make_item(title="Item A"), _make_item(title="Item B", url="https://example.com/b")]
+        items = [
+            _make_item(title="Item A"),
+            _make_item(title="Item B", url="https://example.com/b"),
+        ]
         summary = "# Full summary"
 
         with patch.object(notifier, "notify", new_callable=AsyncMock) as mock_notify:
-            _run_async(notifier.send_daily_summary(
-                summary=summary,
-                important_items=items,
-                all_items_count=20,
-                date="2026-04-24",
-                lang="en",
-                summarizer=summarizer,
-            ))
+            _run_async(
+                notifier.send_daily_summary(
+                    summary=summary,
+                    important_items=items,
+                    all_items_count=20,
+                    date="2026-04-24",
+                    lang="en",
+                    summarizer=summarizer,
+                )
+            )
             # 1 overview + 2 items = 3 calls
             assert mock_notify.call_count == 3
 
@@ -829,17 +895,22 @@ class TestSendDailySummary:
         )
         notifier = WebhookNotifier(config)
         summarizer = DailySummarizer()
-        items = [_make_item(title="Item A"), _make_item(title="Item B", url="https://example.com/b")]
+        items = [
+            _make_item(title="Item A"),
+            _make_item(title="Item B", url="https://example.com/b"),
+        ]
 
         with patch.object(notifier, "notify", new_callable=AsyncMock) as mock_notify:
-            _run_async(notifier.send_daily_summary(
-                summary="# Full summary",
-                important_items=items,
-                all_items_count=20,
-                date="2026-04-24",
-                lang="en",
-                summarizer=summarizer,
-            ))
+            _run_async(
+                notifier.send_daily_summary(
+                    summary="# Full summary",
+                    important_items=items,
+                    all_items_count=20,
+                    date="2026-04-24",
+                    lang="en",
+                    summarizer=summarizer,
+                )
+            )
 
             assert mock_notify.call_count == 3
 
@@ -869,7 +940,10 @@ class TestSendDailySummary:
         )
         notifier = WebhookNotifier(config)
         summarizer = DailySummarizer()
-        items = [_make_item(title="Item A"), _make_item(title="Item B", url="https://example.com/b")]
+        items = [
+            _make_item(title="Item A"),
+            _make_item(title="Item B", url="https://example.com/b"),
+        ]
 
         messages = notifier.build_daily_summary_messages(
             summary="# Full summary",
@@ -890,7 +964,9 @@ class TestSendDailySummary:
         elements = body["card"]["body"]["elements"]
         assert "Expand the panels below" in elements[0]["content"]
         assert "Item A" not in elements[0]["content"]
-        panels = [element for element in elements if element["tag"] == "collapsible_panel"]
+        panels = [
+            element for element in elements if element["tag"] == "collapsible_panel"
+        ]
         assert len(panels) == 2
         assert panels[0]["expanded"] is False
         assert panels[0]["header"]["title"]["content"].startswith("1. Item A")
@@ -912,14 +988,16 @@ class TestSendDailySummary:
         items = [_make_item()]
 
         with patch.object(notifier, "notify", new_callable=AsyncMock) as mock_notify:
-            _run_async(notifier.send_daily_summary(
-                summary="English summary",
-                important_items=items,
-                all_items_count=10,
-                date="2026-04-24",
-                lang="en",
-                summarizer=summarizer,
-            ))
+            _run_async(
+                notifier.send_daily_summary(
+                    summary="English summary",
+                    important_items=items,
+                    all_items_count=10,
+                    date="2026-04-24",
+                    lang="en",
+                    summarizer=summarizer,
+                )
+            )
             mock_notify.assert_not_called()
         del os.environ[_TEST_URL_ENV]
 
@@ -937,14 +1015,16 @@ class TestSendDailySummary:
         items = [_make_item()]
 
         with patch.object(notifier, "notify", new_callable=AsyncMock) as mock_notify:
-            _run_async(notifier.send_daily_summary(
-                summary="中文摘要",
-                important_items=items,
-                all_items_count=10,
-                date="2026-04-24",
-                lang="zh",
-                summarizer=summarizer,
-            ))
+            _run_async(
+                notifier.send_daily_summary(
+                    summary="中文摘要",
+                    important_items=items,
+                    all_items_count=10,
+                    date="2026-04-24",
+                    lang="zh",
+                    summarizer=summarizer,
+                )
+            )
             mock_notify.assert_called_once()
         del os.environ[_TEST_URL_ENV]
 
@@ -962,14 +1042,16 @@ class TestSendDailySummary:
         items = [_make_item()]
 
         with patch.object(notifier, "notify", new_callable=AsyncMock) as mock_notify:
-            _run_async(notifier.send_daily_summary(
-                summary="English summary",
-                important_items=items,
-                all_items_count=10,
-                date="2026-04-24",
-                lang="en",
-                summarizer=summarizer,
-            ))
+            _run_async(
+                notifier.send_daily_summary(
+                    summary="English summary",
+                    important_items=items,
+                    all_items_count=10,
+                    date="2026-04-24",
+                    lang="en",
+                    summarizer=summarizer,
+                )
+            )
             mock_notify.assert_called_once()
         del os.environ[_TEST_URL_ENV]
 
@@ -987,20 +1069,48 @@ class TestSendDailySummary:
 
         before = int(datetime.now(timezone.utc).timestamp())
         with patch.object(notifier, "notify", new_callable=AsyncMock) as mock_notify:
-            _run_async(notifier.send_daily_summary(
-                summary="test",
-                important_items=items,
-                all_items_count=5,
-                date="2026-04-24",
-                lang="en",
-                summarizer=summarizer,
-            ))
+            _run_async(
+                notifier.send_daily_summary(
+                    summary="test",
+                    important_items=items,
+                    all_items_count=5,
+                    date="2026-04-24",
+                    lang="en",
+                    summarizer=summarizer,
+                )
+            )
             after = int(datetime.now(timezone.utc).timestamp())
             vars = mock_notify.call_args[0][0]
             ts = int(vars["timestamp"])
             assert before <= ts <= after
         del os.environ[_TEST_URL_ENV]
 
+    def test_summary_and_items_zh_overview_title(self):
+        """summary_and_items with zh lang uses '总览' in overview title."""
+        os.environ[_TEST_URL_ENV] = _TEST_URL
+        config = WebhookConfig(
+            enabled=True,
+            url_env=_TEST_URL_ENV,
+            delivery="summary_and_items",
+        )
+        notifier = WebhookNotifier(config)
+        summarizer = DailySummarizer()
+        items = [_make_item()]
+
+        with patch.object(notifier, "notify", new_callable=AsyncMock) as mock_notify:
+            _run_async(
+                notifier.send_daily_summary(
+                    summary="中文摘要",
+                    important_items=items,
+                    all_items_count=10,
+                    date="2026-04-24",
+                    lang="zh",
+                    summarizer=summarizer,
+                )
+            )
+            overview_vars = mock_notify.call_args_list[0][0][0]
+            assert overview_vars["message_title"] == "Horizon 2026-04-24 总览"
+        del os.environ[_TEST_URL_ENV]
 
 # ── send_failure_notification ──
 
@@ -1016,10 +1126,12 @@ class TestSendFailureNotification:
         notifier = WebhookNotifier(config)
 
         with patch.object(notifier, "notify", new_callable=AsyncMock) as mock_notify:
-            _run_async(notifier.send_failure(
-                date="2026-04-24",
-                error_message="something went wrong",
-            ))
+            _run_async(
+                notifier.send_failure(
+                    date="2026-04-24",
+                    error_message="something went wrong",
+                )
+            )
             mock_notify.assert_called_once()
             vars = mock_notify.call_args[0][0]
             assert vars["date"] == "2026-04-24"
@@ -1043,10 +1155,12 @@ class TestSendFailureNotification:
 
         before = int(datetime.now(timezone.utc).timestamp())
         with patch.object(notifier, "notify", new_callable=AsyncMock) as mock_notify:
-            _run_async(notifier.send_failure(
-                date="2026-04-24",
-                error_message="error",
-            ))
+            _run_async(
+                notifier.send_failure(
+                    date="2026-04-24",
+                    error_message="error",
+                )
+            )
             after = int(datetime.now(timezone.utc).timestamp())
             vars = mock_notify.call_args[0][0]
             ts = int(vars["timestamp"])

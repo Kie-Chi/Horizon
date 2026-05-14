@@ -71,7 +71,7 @@ But Horizon is not just another summarizer. AI is great at reducing noise, but n
 
 ## Features
 
-- **📡 Watch Your Own Sources** — Track Hacker News, RSS, Reddit, Telegram, Twitter/X, and GitHub releases or user activity in one pipeline
+- **📡 Watch Your Own Sources** — Track Hacker News, RSS, Reddit, Telegram, Twitter/X, GitHub releases or user activity, and OpenBB financial news watchlists in one pipeline
 - **🤖 Turn Noise Into a Reading List** — Score each item from 0-10 with Claude, GPT, Gemini, DeepSeek, Doubao, MiniMax, or any OpenAI-compatible API
 - **🔗 Merge Repeated Stories** — Deduplicate the same story across platforms before it reaches your briefing
 - **🔍 Understand the Background** — Add web-researched context for unfamiliar concepts, companies, projects, and technical terms
@@ -114,6 +114,7 @@ flowchart LR
         telegram["✈️ Telegram"]
         twitter["🐦 Twitter / X"]
         github["🐙 GitHub"]
+        openbb["💹 OpenBB"]
     end
 
     fetch["📥 Fetch"]
@@ -137,6 +138,7 @@ flowchart LR
     telegram --> fetch
     twitter --> fetch
     github --> fetch
+    openbb --> fetch
 
     fetch --> dedup --> score --> enrich --> summary
     config --> score
@@ -149,7 +151,7 @@ flowchart LR
     summary --> mcp
 
     class config config
-    class rss,hn,reddit,telegram,twitter,github source
+    class rss,hn,reddit,telegram,twitter,github,openbb source
     class fetch,dedup,score,enrich,summary process
     class site,email,webhook,mcp output
 ```
@@ -183,6 +185,18 @@ pip install -e .
 ```
 
 `dev` is currently defined as an optional extra in `pyproject.toml`, so use `uv sync --extra dev` for pytest and other development dependencies.
+
+If you want the optional OpenBB financial-news source, install its extra too:
+
+```bash
+uv sync --extra openbb
+```
+
+If `openbb` pulls packages without wheels on your machine, install the SDK manually with binaries only:
+
+```bash
+uv pip install --only-binary=:all: openbb openbb-benzinga
+```
 
 **Option B: Docker**
 
@@ -239,6 +253,8 @@ Minimal manual configuration:
 }
 ```
 
+Any string value in `data/config.json` can reference environment variables with `${VAR_NAME}`. This is useful for values such as `ai.base_url`, private RSS feed URLs, webhook endpoints, or custom header templates.
+
 For the full reference, see the [Configuration Guide](docs/configuration.md).
 
 ### 3. Run
@@ -273,6 +289,7 @@ Horizon works great as a **GitHub Actions** cron job. See [`.github/workflows/da
 | **Telegram** | Public channel messages | — |
 | **Twitter / X** | Tweets from specific users | Yes (top N replies) |
 | **GitHub** | User events & repo releases | — |
+| **OpenBB** | Financial company news by watchlist/provider | — |
 
 ## Where Your Briefing Goes
 
@@ -302,7 +319,7 @@ Horizon already supports the full daily briefing loop: multi-source collection, 
 
 Planned improvements:
 
-- More source types, such as Twitter/X and Discord
+- More source types, such as Discord
 - Custom scoring prompts per source
 - Publish releases on GitHub
 - Publish the package to PyPI for `pip install`

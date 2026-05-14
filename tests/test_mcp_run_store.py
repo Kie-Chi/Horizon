@@ -67,6 +67,23 @@ def test_missing_run_raises(tmp_path: Path) -> None:
         store.run_dir("missing-run")
 
 
+def test_rejects_path_traversal_run_id(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+
+    with pytest.raises(ValueError, match="Invalid run_id"):
+        store.create_run("../outside")
+
+    assert not (tmp_path / "outside").exists()
+
+
+def test_rejects_unsafe_summary_language(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    run_id = store.create_run("run-summary-safe")
+
+    with pytest.raises(ValueError, match="Invalid summary language"):
+        store.save_summary(run_id, "../zh", "# unsafe")
+
+
 def test_missing_artifact_raises(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
     run_id = store.create_run("run-missing-file")

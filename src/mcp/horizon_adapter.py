@@ -16,7 +16,15 @@ from dotenv import load_dotenv
 from .errors import HorizonMcpError
 
 
-VALID_SOURCES = {"github", "hackernews", "rss", "reddit", "telegram"}
+VALID_SOURCES = {
+    "github",
+    "hackernews",
+    "rss",
+    "reddit",
+    "telegram",
+    "twitter",
+    "openbb",
+}
 ENV_KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 
@@ -33,6 +41,7 @@ class HorizonRuntime:
     ContentAnalyzer: Any
     ContentEnricher: Any
     DailySummarizer: Any
+    expand_env_vars: Any
 
 
 def resolve_horizon_path(explicit: str | None = None) -> Path:
@@ -139,6 +148,7 @@ def load_runtime(horizon_path: Path) -> HorizonRuntime:
         ContentAnalyzer=analyzer.ContentAnalyzer,
         ContentEnricher=enricher.ContentEnricher,
         DailySummarizer=summarizer.DailySummarizer,
+        expand_env_vars=storage._expand_env_vars,
     )
 
 
@@ -146,7 +156,9 @@ def load_config(runtime: HorizonRuntime, config_path: Path) -> Any:
     """Load Horizon config using native pydantic model."""
 
     try:
-        payload = json.loads(config_path.read_text(encoding="utf-8"))
+        payload = runtime.expand_env_vars(
+            json.loads(config_path.read_text(encoding="utf-8"))
+        )
         return runtime.Config.model_validate(payload)
     except Exception as exc:
         raise HorizonMcpError(
@@ -169,7 +181,9 @@ def make_orchestrator(runtime: HorizonRuntime, config: Any, storage: Any) -> Any
     return runtime.HorizonOrchestrator(config, storage)
 
 
-def apply_source_filter(config: Any, sources: list[str] | None) -> tuple[Any, list[str], list[str]]:
+def apply_source_filter(
+    config: Any, sources: list[str] | None
+) -> tuple[Any, list[str], list[str]]:
     """Return filtered config and source selection diagnostics."""
 
     if not sources:
@@ -195,6 +209,12 @@ def apply_source_filter(config: Any, sources: list[str] | None) -> tuple[Any, li
     if "telegram" not in wanted:
         clone.sources.telegram.enabled = False
         clone.sources.telegram.channels = []
+    if "twitter" not in wanted and getattr(clone.sources, "twitter", None):
+        clone.sources.twitter.enabled = False
+        clone.sources.twitter.users = []
+    if "openbb" not in wanted and getattr(clone.sources, "openbb", None):
+        clone.sources.openbb.enabled = False
+        clone.sources.openbb.watchlists = []
 
     return clone, chosen, unknown
 
@@ -213,6 +233,10 @@ def get_enabled_sources(config: Any) -> list[str]:
         enabled.append("reddit")
     if getattr(config.sources.telegram, "enabled", False):
         enabled.append("telegram")
+    if getattr(getattr(config.sources, "twitter", None), "enabled", False):
+        enabled.append("twitter")
+    if getattr(getattr(config.sources, "openbb", None), "enabled", False):
+        enabled.append("openbb")
     return enabled
 
 

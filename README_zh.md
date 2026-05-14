@@ -66,13 +66,13 @@
 
 ## 为什么需要 Horizon？
 
-好新闻分散在各处，坏信息却源源不断。Horizon 为你先完成第一轮筛选：从 Hacker News、Reddit、Telegram、RSS、Twitter/X 和 GitHub 抓取内容，合并重复新闻，用 AI 打分过滤，并为重要内容补充背景解释和社区讨论。
+好新闻分散在各处，坏信息却源源不断。Horizon 为你先完成第一轮筛选：从 Hacker News、Reddit、Telegram、RSS、Twitter/X、GitHub 和 OpenBB 抓取内容，合并重复新闻，用 AI 打分过滤，并为重要内容补充背景解释和社区讨论。
 
 但 Horizon 不只是又一个摘要工具。AI 很擅长降低噪声，但新闻仍然需要人的品味：你信任哪些信息源，哪些评论改变了你对事件的理解，哪些小众来源值得被更多人看见。Horizon 通过可定制的信息源、筛选标准、模型、语言、分发方式、评论摘要和社区信息源官网，把这层“人味”保留下来。
 
 ## 功能特性
 
-- **📡 关注你的信息源** — 将 Hacker News、RSS、Reddit、Telegram、Twitter/X 和 GitHub Release / 用户动态纳入同一条 pipeline
+- **📡 关注你的信息源** — 将 Hacker News、RSS、Reddit、Telegram、Twitter/X、GitHub Release / 用户动态，以及 OpenBB 金融新闻观察列表纳入同一条 pipeline
 - **🤖 把噪声变成阅读清单** — 使用 Claude、GPT、Gemini、DeepSeek、豆包、MiniMax 或任意 OpenAI 兼容 API，为每条内容评分 0-10
 - **🔗 合并重复新闻** — 在生成日报前自动合并来自不同平台的相同故事
 - **🔍 补全背景知识** — 为陌生概念、公司、项目和技术术语补充网络搜索得到的背景解释
@@ -115,7 +115,8 @@ flowchart LR
          telegram["✈️ Telegram"]
          twitter["🐦 Twitter / X"]
          github["🐙 GitHub"]
-     end
+         openbb["💹 OpenBB"]
+      end
 
     fetch["📥 抓取"]
     dedup["🧹 新闻去重"]
@@ -135,9 +136,10 @@ flowchart LR
      rss --> fetch
      hn --> fetch
      reddit --> fetch
-     telegram --> fetch
-     twitter --> fetch
-     github --> fetch
+      telegram --> fetch
+      twitter --> fetch
+      github --> fetch
+      openbb --> fetch
 
     fetch --> dedup --> score --> enrich --> summary
     config --> score
@@ -150,7 +152,7 @@ flowchart LR
     summary --> mcp
 
     class config config
-    class rss,hn,reddit,telegram,twitter,github source
+    class rss,hn,reddit,telegram,twitter,github,openbb source
     class fetch,dedup,score,enrich,summary process
     class site,email,webhook,mcp output
 ```
@@ -184,6 +186,18 @@ pip install -e .
 ```
 
 当前 `dev` 在 `pyproject.toml` 中定义为 optional extra，因此安装 `pytest` 等开发依赖时应使用 `uv sync --extra dev`。
+
+如果你要启用可选的 OpenBB 金融新闻源，还需要安装对应 extra：
+
+```bash
+uv sync --extra openbb
+```
+
+如果 `openbb` 在你的机器上会拉到缺少 wheel 的依赖，建议改用只安装二进制包：
+
+```bash
+uv pip install --only-binary=:all: openbb openbb-benzinga
+```
 
 #### 方式 B：Docker
 
@@ -240,6 +254,8 @@ cp data/config.example.json data/config.json  # 自定义信息源
 }
 ```
 
+`data/config.json` 里的任意字符串值都可以通过 `${VAR_NAME}` 引用环境变量。这适合用于 `ai.base_url`、私有 RSS 链接、Webhook 地址或自定义请求头模板等字段。
+
 完整配置参考请查看[配置指南](docs/configuration.md)。
 
 ### 3. 运行
@@ -274,6 +290,7 @@ Horizon 非常适合作为 **GitHub Actions** 定时任务运行。查看 [`.git
 | **Telegram** | 公开频道消息 | — |
 | **Twitter / X** | 特定用户的推文 | 支持（前 N 条回复） |
 | **GitHub** | 用户动态 & 仓库 Release | — |
+| **OpenBB** | 按观察列表 / provider 抓取金融公司新闻 | — |
 
 ## 日报可以去哪里
 
@@ -303,7 +320,7 @@ Horizon 已经支持完整的日报流程：多源抓取、AI 打分、去重、
 
 计划中的改进：
 
-- 更多信息源类型，例如 Twitter/X 和 Discord
+- 更多信息源类型，例如 Discord
 - 按信息源自定义打分 Prompt
 - 在 GitHub 上发布 Release
 - 发布到 PyPI，支持通过 `pip install` 安装

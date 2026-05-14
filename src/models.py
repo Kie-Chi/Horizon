@@ -1,6 +1,6 @@
 """Core data models for Horizon."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel, HttpUrl, Field, field_validator
@@ -8,6 +8,7 @@ from pydantic import BaseModel, HttpUrl, Field, field_validator
 
 class SourceType(str, Enum):
     """Supported information source types."""
+
     GITHUB = "github"
     HACKERNEWS = "hackernews"
     RSS = "rss"
@@ -27,7 +28,7 @@ class ContentItem(BaseModel):
     content: Optional[str] = None
     author: Optional[str] = None
     published_at: datetime
-    fetched_at: datetime = Field(default_factory=datetime.utcnow)
+    fetched_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     # AI analysis results
@@ -39,6 +40,7 @@ class ContentItem(BaseModel):
 
 class AIProvider(str, Enum):
     """Supported AI providers."""
+
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     AZURE = "azure"
@@ -96,17 +98,21 @@ class RSSSourceConfig(BaseModel):
 
 class RedditSubredditConfig(BaseModel):
     """Configuration for monitoring a specific subreddit."""
+
     subreddit: str
     enabled: bool = True
-    sort: str = "hot"           # hot, new, top, rising
-    time_filter: str = "day"    # hour, day, week, month, year, all (only for top/controversial)
+    sort: str = "hot"  # hot, new, top, rising
+    time_filter: str = (
+        "day"  # hour, day, week, month, year, all (only for top/controversial)
+    )
     fetch_limit: int = 25
     min_score: int = 10
 
 
 class RedditUserConfig(BaseModel):
     """Configuration for monitoring a specific Reddit user."""
-    username: str               # without u/ prefix
+
+    username: str  # without u/ prefix
     enabled: bool = True
     sort: str = "new"
     fetch_limit: int = 10
@@ -114,27 +120,31 @@ class RedditUserConfig(BaseModel):
 
 class RedditConfig(BaseModel):
     """Reddit source configuration."""
+
     enabled: bool = True
     subreddits: List[RedditSubredditConfig] = Field(default_factory=list)
     users: List[RedditUserConfig] = Field(default_factory=list)
-    fetch_comments: int = 5     # top comments per post, 0 to disable
+    fetch_comments: int = 5  # top comments per post, 0 to disable
 
 
 class TelegramChannelConfig(BaseModel):
     """Configuration for monitoring a specific Telegram channel."""
-    channel: str            # channel username, e.g. "zaihuapd"
+
+    channel: str  # channel username, e.g. "zaihuapd"
     enabled: bool = True
     fetch_limit: int = 20
 
 
 class TelegramConfig(BaseModel):
     """Telegram source configuration."""
+
     enabled: bool = True
     channels: List[TelegramChannelConfig] = Field(default_factory=list)
 
 
 class TwitterConfig(BaseModel):
     """Twitter source configuration via Apify."""
+
     enabled: bool = True
     apify_token_env: str = "APIFY_TOKEN"
     actor_id: str = "altimis~scweet"
@@ -194,15 +204,23 @@ class SourcesConfig(BaseModel):
 class WebhookConfig(BaseModel):
     """Webhook notification configuration."""
 
-    url_env: Optional[str] = None          # Environment variable name containing the webhook URL
-    request_body: Optional[Union[str, dict, list]] = None  # POST body: real JSON object or string with #{key} placeholders; if empty, will use GET
-    headers: Optional[str] = None          # Custom headers, "Key: Value" per line
-    delivery: str = "summary"             # summary, or summary_and_items
-    overview_position: str = "first"       # For summary_and_items: first, or last
-    platform: str = "generic"              # generic, feishu, lark, dingtalk, slack, discord
-    layout: str = "markdown"               # markdown, or collapsible
-    fallback_layout: str = "markdown"      # Layout to use when the requested layout is unsupported
-    languages: Optional[List[str]] = None  # Optional language filter for webhook delivery; defaults to all AI languages
+    url_env: Optional[str] = (
+        None  # Environment variable name containing the webhook URL
+    )
+    request_body: Optional[Union[str, dict, list]] = (
+        None  # POST body: real JSON object or string with #{key} placeholders; if empty, will use GET
+    )
+    headers: Optional[str] = None  # Custom headers, "Key: Value" per line
+    delivery: str = "summary"  # summary, or summary_and_items
+    overview_position: str = "first"  # For summary_and_items: first, or last
+    platform: str = "generic"  # generic, feishu, lark, dingtalk, slack, discord
+    layout: str = "markdown"  # markdown, or collapsible
+    fallback_layout: str = (
+        "markdown"  # Layout to use when the requested layout is unsupported
+    )
+    languages: Optional[List[str]] = (
+        None  # Optional language filter for webhook delivery; defaults to all AI languages
+    )
     enabled: bool = False
 
     @field_validator("delivery")
@@ -248,6 +266,7 @@ class WebhookConfig(BaseModel):
 
 class EmailConfig(BaseModel):
     """Email configuration for updates/subscriptions."""
+
     imap_server: str
     imap_port: int = 993
     imap_enabled: bool = True

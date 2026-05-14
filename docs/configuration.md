@@ -132,6 +132,8 @@ By default, AI scoring and enrichment run one item at a time. If your API endpoi
 }
 ```
 
+For OpenAI-compatible gateways, Horizon sends `temperature` by default. If a newer reasoning-style model rejects that parameter with an error such as `temperature is deprecated for this model`, Horizon retries once without it and remembers that capability for later requests.
+
 ## Information Sources
 
 All sources are configured under the top-level `sources` key in `config.json`.
@@ -272,6 +274,52 @@ Requires an [Apify](https://apify.com) account. Set `APIFY_TOKEN` in your `.env`
 
 The scraper uses the `altimis/scweet` actor by default. You can override it with `actor_id` if needed.
 
+### OpenBB Financial News
+
+OpenBB is useful when you want equity or macro news from providers such as yfinance, Benzinga, FMP, Intrinio, Tiingo, SEC, or Federal Reserve through one SDK.
+
+Install the optional dependency before enabling the source:
+
+```bash
+uv sync --extra openbb
+```
+
+If your platform struggles to build transitive dependencies, prefer:
+
+```bash
+uv pip install --only-binary=:all: openbb openbb-benzinga
+```
+
+```json
+{
+  "sources": {
+    "openbb": {
+      "enabled": true,
+      "watchlists": [
+        {
+          "name": "megacaps",
+          "enabled": true,
+          "provider": "yfinance",
+          "fetch_limit": 20,
+          "category": "equities",
+          "symbols": ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA"]
+        }
+      ]
+    }
+  }
+}
+```
+
+- `enabled` — enable or disable the OpenBB source globally
+- `watchlists` — list of named ticker groups; each watchlist becomes one `news.company()` call per run
+- `name` — label shown in Horizon metadata and selection breakdowns
+- `provider` — OpenBB provider name such as `yfinance` or `benzinga`
+- `fetch_limit` — maximum news rows requested for that watchlist
+- `category` — optional tag stored on fetched items
+- `symbols` — ticker symbols to fetch together; group symbols by provider to keep requests efficient
+
+OpenBB provider credentials are handled by the OpenBB SDK itself, using its own environment variables or user settings. Horizon does not pass those secrets through `data/config.json`.
+
 ## Filtering
 
 Content is scored 0-10:
@@ -296,17 +344,34 @@ Content is scored 0-10:
 
 ## Environment Variable Substitution
 
-RSS feed URLs support `${VAR_NAME}` syntax for secrets. The variable is expanded at runtime from environment variables (or `.env` file):
+Any string value in `data/config.json` supports `${VAR_NAME}` syntax. Variables are expanded at runtime from the environment (including values loaded from `.env`). This lets you keep secrets, tenant-specific endpoints, and private URLs out of the checked-in JSON file.
+
+Example:
 
 ```json
 {
-  "name": "LWN.net",
-  "url": "https://lwn.net/headlines/full_text?key=${LWN_KEY}",
-  "enabled": true
+  "ai": {
+    "base_url": "${HORIZON_AI_BASE_URL}"
+  },
+  "sources": {
+    "rss": [
+      {
+        "name": "LWN.net",
+        "url": "https://lwn.net/headlines/full_text?key=${LWN_KEY}",
+        "enabled": true
+      }
+    ]
+  },
+  "webhook": {
+    "url_env": "HORIZON_WEBHOOK_URL",
+    "headers": "Authorization: Bearer ${HORIZON_WEBHOOK_TOKEN}"
+  }
 }
 ```
 
-This way `config.json` can be committed to a public repo without leaking tokens.
+- `${NAME}` is replaced only when `NAME` is a valid identifier like `LWN_KEY` or `HORIZON_AI_BASE_URL`.
+- Unset variables are left as `${NAME}` instead of becoming an empty string, so configuration mistakes fail loudly downstream.
+- Expansion is recursive through dicts, lists, and tuples; non-string values are left unchanged.
 
 ## Email Subscription
 

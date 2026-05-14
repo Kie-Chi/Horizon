@@ -1,6 +1,7 @@
 """RSS feed scraper implementation."""
 
 import calendar
+import hashlib
 import logging
 import os
 import re
@@ -50,9 +51,7 @@ class RSSScraper(BaseScraper):
         return items
 
     async def _fetch_feed(
-        self,
-        source: RSSSourceConfig,
-        since: datetime
+        self, source: RSSSourceConfig, since: datetime
     ) -> List[ContentItem]:
         """Fetch items from a single RSS feed.
 
@@ -68,7 +67,7 @@ class RSSScraper(BaseScraper):
         try:
             # Expand environment variables in URL (e.g. ${LWN_TOKEN})
             feed_url = re.sub(
-                r'\$\{(\w+)\}',
+                r"\$\{(\w+)\}",
                 lambda m: os.environ.get(m.group(1), m.group(0)).strip(),
                 str(source.url),
             )
@@ -89,13 +88,15 @@ class RSSScraper(BaseScraper):
                 # Generate unique ID from feed URL and entry ID
                 feed_id = str(source.url).split("//")[1].replace("/", "_")
                 entry_id = entry.get("id", entry.get("link", ""))
-                unique_id = f"{feed_id}:{hash(entry_id)}"
+                entry_hash = hashlib.sha256(str(entry_id).encode("utf-8")).hexdigest()[
+                    :16
+                ]
 
                 # Extract content
                 content = self._extract_content(entry)
 
                 item = ContentItem(
-                    id=self._generate_id("rss", feed_id, str(hash(entry_id))),
+                    id=self._generate_id("rss", feed_id, entry_hash),
                     source_type=SourceType.RSS,
                     title=entry.get("title", "Untitled"),
                     url=entry.get("link", str(source.url)),
@@ -106,7 +107,7 @@ class RSSScraper(BaseScraper):
                         "feed_name": source.name,
                         "category": source.category,
                         "tags": [tag.term for tag in entry.get("tags", [])],
-                    }
+                    },
                 )
                 items.append(item)
 
@@ -133,8 +134,7 @@ class RSSScraper(BaseScraper):
                     # Try parsing structured time first
                     if f"{field}_parsed" in entry and entry[f"{field}_parsed"]:
                         return datetime.fromtimestamp(
-                            calendar.timegm(entry[f"{field}_parsed"]),
-                            tz=timezone.utc
+                            calendar.timegm(entry[f"{field}_parsed"]), tz=timezone.utc
                         )
                     # Fallback to string parsing
                     date_str = entry[field]
@@ -156,9 +156,9 @@ class RSSScraper(BaseScraper):
         # Try different content fields
         if "summary" in entry:
             return entry.summary
-        elif "description" in entry:
+        if "description" in entry:
             return entry.description
-        elif "content" in entry and entry.content:
+        if "content" in entry and entry.content:
             # content is usually a list
             return entry.content[0].get("value", "")
 

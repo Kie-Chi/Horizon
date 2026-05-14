@@ -5,7 +5,7 @@ title: Source Scrapers
 
 # Source Scrapers
 
-Horizon fetches content from four source types. All scrapers inherit from `BaseScraper`, share an async HTTP client, and implement a `fetch(since)` method that returns a list of `ContentItem` objects. Sources are fetched concurrently via `asyncio.gather`.
+Horizon fetches content from multiple source types. All scrapers inherit from `BaseScraper`, share an async HTTP client, and implement a `fetch(since)` method that returns a list of `ContentItem` objects. Sources are fetched concurrently via `asyncio.gather`.
 
 ## Hacker News
 
@@ -132,6 +132,49 @@ Subreddits and users are fetched concurrently. Comments are sorted by score, lim
 **Rate limiting**: Detects HTTP 429 responses, reads the `Retry-After` header, waits, and retries once. Uses a descriptive `User-Agent` as required by Reddit's API guidelines.
 
 **Extracted data**: title, URL, author, score, upvote ratio, comment count, subreddit, flair, self-text, and top comments.
+
+## OpenBB
+
+**File**: `src/scrapers/openbb.py`
+
+Uses the [OpenBB Platform](https://www.openbb.co/platform) Python SDK via `obb.news.company()` to fetch company news for one or more ticker watchlists.
+
+The scraper imports `openbb` lazily. If the optional dependency is not installed, Horizon logs a warning and skips the source instead of failing the whole run.
+
+**Config** (`sources.openbb`):
+
+```json
+{
+  "enabled": true,
+  "watchlists": [
+    {
+      "name": "megacaps",
+      "symbols": ["AAPL", "MSFT", "NVDA"],
+      "enabled": true,
+      "provider": "yfinance",
+      "fetch_limit": 20,
+      "category": "equities"
+    }
+  ]
+}
+```
+
+- `watchlists` — each enabled watchlist triggers one `news.company()` call per run
+- `provider` — OpenBB provider name for that watchlist
+- `symbols` — tickers fetched together for the same provider
+- `fetch_limit` — maximum rows requested from the provider
+- `category` — optional metadata tag stored on each item
+
+Behavior:
+
+- Wraps the synchronous OpenBB SDK in `asyncio.to_thread` so the event loop stays responsive
+- Deduplicates duplicate news across watchlists by article URL
+- Skips malformed rows, rows without URL/title/date, and items older than the current time window
+- Keeps fetching other watchlists if one provider call fails
+
+**Credentials**: provider-specific secrets are resolved by the OpenBB SDK from its own environment variables or settings file. Horizon does not pass those values directly.
+
+**Extracted data**: title, URL, author, published time, article body/excerpt, watchlist name, provider, category, and symbol list.
 
 ## Twitter
 
