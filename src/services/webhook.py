@@ -257,10 +257,6 @@ class WebhookNotifier:
 
     def _validate_url(self, url: str) -> str:
         """Validate webhook URL has a valid scheme (http/https) and hostname.
-
-        Strips common shell escape artifacts (e.g. \\?, \\=, \\&) that may
-        appear when users copy-paste URLs from terminal output.
-
         Raises:
             ValueError: If the URL is empty, has wrong scheme, no hostname,
                         or is structurally invalid
@@ -612,16 +608,67 @@ class WebhookNotifier:
             )
             logger.error("Webhook unexpected error: URL=%s, type=%s, error=%s", request_url, type(e).__name__, e)
 
+    def _check_body_error_code(self, body: str) -> Optional[str]:
+        """Check if a 2xx response body contains a platform-specific error code.
+
+        Returns a descriptive string if an error is detected, or None if the
+        response appears successful.
+
+        Checked patterns:
+        - Feishu/Lark: {"code": non-zero, "msg": "..."} or {"StatusCode": non-zero}
+        - DingTalk: {"errcode": non-zero, "errmsg": "..."}
+        - Slack/Discord: {"ok": false}
+        """
+        try:
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+        # Feishu/Lark: "code" or "StatusCode" field
+        feishu_code = data.get("code") or data.get("StatusCode")
+        if feishu_code is not None and feishu_code != 0:
+            msg = data.get("msg") or data.get("StatusMessage") or ""
+            return f"Feishu/Lark error (code={feishu_code}): {msg}"
+
+        # DingTalk: "errcode" field
+        dingtalk_code = data.get("errcode")
+        if dingtalk_code is not None and dingtalk_code != 0:
+            msg = data.get("errmsg") or ""
+            return f"DingTalk error (errcode={dingtalk_code}): {msg}"
+
+        # Slack/Discord: "ok" field
+        if data.get("ok") is False:
+            error = data.get("error") or ""
+            return f"Slack/Discord error: {error}"
+
+        return None
+
     def _handle_response_status(self, response: httpx.Response, request_url: str) -> None:
-        """Log and display HTTP response status by category."""
+        """Log and display HTTP response status by category.
+
+        Even 2xx responses may contain platform-specific error codes
+        in the JSON body (e.g. Feishu code=19001, DingTalk errcode=400,
+        Slack ok=false).
+        """
         status = response.status_code
+        body = response.text[:500]
 
         if 200 <= status < 300:
-            logger.info(
-                "Webhook sent OK. URL: %s, body: %s",
-                request_url,
-                response.text[:500],
-            )
+            error_hint = self._check_body_error_code(body)
+            if error_hint:
+                logger.warning(
+                    "Webhook 2xx but body contains error: URL=%s, status=%d, body=%s",
+                    request_url, status, body,
+                )
+                self.console.print(
+                    f"[yellow]Webhook response (status={status}): {body}[/yellow]\n"
+                    f"[yellow]{error_hint}[/yellow]"
+                )
+            else:
+                logger.info("Webhook sent OK. URL: %s, body: %s", request_url, body)
+                self.console.print(
+                    f"[green]Webhook response (status={status}): {body}[/green]"
+                )
             return
 
         if 300 <= status < 400:

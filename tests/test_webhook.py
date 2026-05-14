@@ -1150,11 +1150,13 @@ class TestHTTPStatusHandling:
     def _cleanup(self):
         del os.environ[_TEST_URL_ENV]
 
-    def test_2xx_success(self):
+    def test_2xx_success_prints_response(self):
         notifier = self._make_notifier()
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.text = "OK"
+        mock_response.text = '{"code":0,"msg":"ok"}'
+
+        mock_console = MagicMock()
 
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
@@ -1163,7 +1165,112 @@ class TestHTTPStatusHandling:
             mock_client.__aexit__ = AsyncMock(return_value=False)
             mock_client_cls.return_value = mock_client
 
+            notifier.console = mock_console
             _run_async(notifier.notify({"date": "2026-04-24"}))
+
+            printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+            assert "status=200" in printed
+            assert '"code":0' in printed
+            # Success response should be green, not yellow
+            assert "[green]" in printed
+        self._cleanup()
+
+    def test_2xx_feishu_error_code_prints_yellow_warning(self):
+        """Feishu returns HTTP 200 with code=19001 in body — should be yellow warning."""
+        notifier = self._make_notifier()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = '{"code":19001,"msg":"param invalid: incoming webhook access token invalid"}'
+
+        mock_console = MagicMock()
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            notifier.console = mock_console
+            _run_async(notifier.notify({"date": "2026-04-24"}))
+
+            printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+            assert "19001" in printed
+            assert "Feishu/Lark" in printed
+            assert "[yellow]" in printed
+        self._cleanup()
+
+    def test_2xx_dingtalk_error_code_prints_yellow_warning(self):
+        """DingTalk returns HTTP 200 with errcode=400 in body — should be yellow warning."""
+        notifier = self._make_notifier()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = '{"errcode":400,"errmsg":"invalid token"}'
+
+        mock_console = MagicMock()
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            notifier.console = mock_console
+            _run_async(notifier.notify({"date": "2026-04-24"}))
+
+            printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+            assert "errcode=400" in printed
+            assert "DingTalk" in printed
+            assert "[yellow]" in printed
+        self._cleanup()
+
+    def test_2xx_slack_ok_false_prints_yellow_warning(self):
+        """Slack returns HTTP 200 with ok=false — should be yellow warning."""
+        notifier = self._make_notifier()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = '{"ok":false,"error":"invalid_token"}'
+
+        mock_console = MagicMock()
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            notifier.console = mock_console
+            _run_async(notifier.notify({"date": "2026-04-24"}))
+
+            printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+            assert "Slack/Discord" in printed
+            assert "[yellow]" in printed
+        self._cleanup()
+
+    def test_2xx_non_json_body_prints_green(self):
+        """Non-JSON 2xx response body prints as green (no error code check possible)."""
+        notifier = self._make_notifier()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+
+        mock_console = MagicMock()
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            notifier.console = mock_console
+            _run_async(notifier.notify({"date": "2026-04-24"}))
+
+            printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+            assert "status=200" in printed
+            assert "[green]" in printed
         self._cleanup()
 
     def test_3xx_redirect_prints_warning(self):
