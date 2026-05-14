@@ -136,7 +136,6 @@ async def _run_test(webhook_config, lang: str, dry_run: bool, delivery_override:
         lang=lang,
         summarizer=summarizer,
     )
-    console.print("[green]Test notification sent.[/green]")
 
 
 def main() -> None:
