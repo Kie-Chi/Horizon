@@ -7,6 +7,7 @@ import os
 import re
 from datetime import datetime, timezone
 from typing import Any, List, Optional, Union
+from urllib.parse import urlparse
 import httpx
 
 from ..models import ContentItem, WebhookConfig
@@ -240,7 +241,6 @@ class WebhookNotifier:
 
     def __init__(self, config: WebhookConfig, console=None):
         self.config = config
-        self.url = os.getenv(config.url_env or "") if config.url_env else None
         if console is None:
             try:
                 from rich.console import Console
@@ -252,6 +252,76 @@ class WebhookNotifier:
                 self.console = DummyConsole()
         else:
             self.console = console
+        self.url = None
+        self._validate_config()  # sets self.url or raises ValueError
+
+    def _validate_url(self, url: str) -> str:
+        """Validate webhook URL has a valid scheme (http/https) and hostname.
+
+        Strips common shell escape artifacts (e.g. \\?, \\=, \\&) that may
+        appear when users copy-paste URLs from terminal output.
+
+        Raises:
+            ValueError: If the URL is empty, has wrong scheme, no hostname,
+                        or is structurally invalid
+        """
+        url = url.strip()
+        # Remove shell escape artifacts: \? \= \& \% before query chars
+        url = re.sub(r"\\([?=&%])", r"\1", url)
+        if not url:
+            raise ValueError(
+                f"Webhook URL is empty (env var '{self.config.url_env}' is set but empty)"
+            )
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(
+                f"Webhook URL must use http or https scheme, got '{parsed.scheme or 'none'}' "
+                f"(env var '{self.config.url_env}')"
+            )
+        if not parsed.hostname:
+            raise ValueError(
+                f"Webhook URL has no hostname: '{url}' "
+                f"(env var '{self.config.url_env}')"
+            )
+        try:
+            httpx.URL(url)
+        except httpx.InvalidURL as e:
+            raise ValueError(
+                f"Webhook URL is structurally invalid: '{url}' — {e} "
+                f"(env var '{self.config.url_env}')"
+            ) from e
+        return url
+
+    def _validate_config(self) -> None:
+        """Validate webhook URL configuration and print warnings for skip scenarios.
+
+        Raises ValueError when URL is present but invalid.
+        Sets self.url to the validated URL, or leaves it None for skip scenarios.
+        """
+        if not self.config.url_env:
+            # url_env not configured at all
+            logger.warning("Webhook enabled but url_env is not configured, skipping notification.")
+            self.console.print(
+                "[yellow]Webhook enabled but 'url_env' is not set in config. "
+                "No notification URL available, skipping.[/yellow]"
+            )
+            return
+
+        raw_url = os.getenv(self.config.url_env)
+        if raw_url is None:
+            # env var name configured, but the env var itself doesn't exist
+            logger.warning(
+                "Webhook enabled but env var '%s' is not set, skipping notification.",
+                self.config.url_env,
+            )
+            self.console.print(
+                f"[yellow]Webhook enabled but env var '{self.config.url_env}' is not set "
+                f"in your environment. Skipping notification.[/yellow]"
+            )
+            return
+
+        # env var exists — validate the URL value (strip + scheme + hostname + httpx check)
+        self.url = self._validate_url(raw_url)
 
     def _render_request_components(self, variables: dict) -> tuple[str, str | None, dict[str, str]]:
         """Render the final request URL, body, and headers for the given variables."""
@@ -490,10 +560,15 @@ class WebhookNotifier:
                        in URL, request_body, and headers.
         """
         if not self.config.enabled:
+            self.console.print("[yellow]Webhook is disabled, skipping notification.[/yellow]")
             return
 
         if not self.url:
             logger.warning("Webhook enabled but URL is empty (env var %s not set), skipping notification.", self.config.url_env)
+            self.console.print(
+                f"[yellow]Webhook enabled but URL is empty — "
+                f"env var '{self.config.url_env}' is not set. Skipping notification.[/yellow]"
+            )
             return
 
         method = "GET"
@@ -514,27 +589,71 @@ class WebhookNotifier:
                         headers=headers,
                     )
 
-            if response.status_code == 200:
-                logger.info(
-                    "Webhook sent OK. URL: %s, body: %s",
-                    request_url,
-                    response.text[:500],
-                )
-            else:
-                self.console.print(
-                    f"[red]Webhook failed! status={response.status_code} "
-                    f"response={response.text[:500]}[/red]"
-                )
-                logger.error(
-                    "Webhook failed! URL: %s, status: %d, body: %s",
-                    request_url,
-                    response.status_code,
-                    response.text[:500],
-                )
+            self._handle_response_status(response, request_url)
 
+        except httpx.InvalidURL as e:
+            self.console.print(
+                f"[red]Webhook URL is invalid: {e}[/red]"
+            )
+            logger.error("Webhook URL invalid: %s, env var: %s", e, self.config.url_env)
+        except httpx.ConnectError as e:
+            self.console.print(
+                f"[red]Webhook connection failed: {e}[/red]"
+            )
+            logger.error("Webhook connection failed: URL=%s, error=%s", request_url, e)
+        except httpx.TimeoutException as e:
+            self.console.print(
+                f"[red]Webhook request timed out: {e}[/red]"
+            )
+            logger.error("Webhook timeout: URL=%s, error=%s", request_url, e)
         except Exception as e:
-            self.console.print(f"[red]Webhook call failed! Exception: {e}[/red]")
-            logger.error("Webhook call failed! URL: %s, exception: %s", request_url, e)
+            self.console.print(
+                f"[red]Webhook call failed unexpectedly: {type(e).__name__}: {e}[/red]"
+            )
+            logger.error("Webhook unexpected error: URL=%s, type=%s, error=%s", request_url, type(e).__name__, e)
+
+    def _handle_response_status(self, response: httpx.Response, request_url: str) -> None:
+        """Log and display HTTP response status by category."""
+        status = response.status_code
+
+        if 200 <= status < 300:
+            logger.info(
+                "Webhook sent OK. URL: %s, body: %s",
+                request_url,
+                response.text[:500],
+            )
+            return
+
+        if 300 <= status < 400:
+            location = response.headers.get("location", "")
+            self.console.print(
+                f"[yellow]Webhook received redirect (status={status})[/yellow]"
+            )
+            logger.warning(
+                "Webhook redirect: URL=%s, status=%d, location=%s",
+                request_url, status, location,
+            )
+        elif 400 <= status < 500:
+            self.console.print(
+                f"[red]Webhook client error (status={status}): {response.text[:500]}[/red]"
+            )
+            logger.error(
+                "Webhook client error: URL=%s, status=%d, body=%s",
+                request_url, status, response.text[:500],
+            )
+        elif 500 <= status < 600:
+            self.console.print(
+                f"[red]Webhook server error (status={status}): {response.text[:500]}[/red]"
+            )
+            logger.error(
+                "Webhook server error: URL=%s, status=%d, body=%s",
+                request_url, status, response.text[:500],
+            )
+        else:
+            self.console.print(
+                f"[red]Webhook unexpected status={status}: {response.text[:500]}[/red]"
+            )
+            logger.error("Webhook unexpected status: URL=%s, status=%d", request_url, status)
 
     async def send_daily_summary(
         self,

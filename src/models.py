@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import Enum
 from typing import Optional, List, Dict, Any, Union
-from pydantic import BaseModel, HttpUrl, Field
+from pydantic import BaseModel, HttpUrl, Field, field_validator
 
 
 class SourceType(str, Enum):
@@ -204,6 +204,46 @@ class WebhookConfig(BaseModel):
     fallback_layout: str = "markdown"      # Layout to use when the requested layout is unsupported
     languages: Optional[List[str]] = None  # Optional language filter for webhook delivery; defaults to all AI languages
     enabled: bool = False
+
+    @field_validator("delivery")
+    @classmethod
+    def validate_delivery(cls, v: str) -> str:
+        allowed = {"summary", "summary_and_items"}
+        if v not in allowed:
+            raise ValueError(f"webhook.delivery must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator("platform")
+    @classmethod
+    def validate_platform(cls, v: str) -> str:
+        allowed = {"generic", "feishu", "lark", "dingtalk", "slack", "discord"}
+        if v not in allowed:
+            raise ValueError(f"webhook.platform must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator("layout")
+    @classmethod
+    def validate_layout(cls, v: str) -> str:
+        allowed = {"markdown", "collapsible"}
+        if v not in allowed:
+            raise ValueError(f"webhook.layout must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator("fallback_layout")
+    @classmethod
+    def validate_fallback_layout(cls, v: str) -> str:
+        allowed = {"markdown", "collapsible"}
+        if v not in allowed:
+            raise ValueError(f"webhook.fallback_layout must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator("overview_position")
+    @classmethod
+    def validate_overview_position(cls, v: str) -> str:
+        allowed = {"first", "last"}
+        if v not in allowed:
+            raise ValueError(f"webhook.overview_position must be one of {allowed}, got '{v}'")
+        return v
 
 
 class EmailConfig(BaseModel):

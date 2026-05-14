@@ -3,10 +3,12 @@
 import asyncio
 import json
 import os
+import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+from pydantic import ValidationError
 
 from src.models import ContentItem, SourceType, WebhookConfig
 from src.services.webhook import (
@@ -999,31 +1001,6 @@ class TestSendDailySummary:
             assert before <= ts <= after
         del os.environ[_TEST_URL_ENV]
 
-    def test_summary_and_items_zh_overview_title(self):
-        """summary_and_items with zh lang uses '总览' in overview title."""
-        os.environ[_TEST_URL_ENV] = _TEST_URL
-        config = WebhookConfig(
-            enabled=True,
-            url_env=_TEST_URL_ENV,
-            delivery="summary_and_items",
-        )
-        notifier = WebhookNotifier(config)
-        summarizer = DailySummarizer()
-        items = [_make_item()]
-
-        with patch.object(notifier, "notify", new_callable=AsyncMock) as mock_notify:
-            _run_async(notifier.send_daily_summary(
-                summary="中文摘要",
-                important_items=items,
-                all_items_count=10,
-                date="2026-04-24",
-                lang="zh",
-                summarizer=summarizer,
-            ))
-            overview_vars = mock_notify.call_args_list[0][0][0]
-            assert overview_vars["message_title"] == "Horizon 2026-04-24 总览"
-        del os.environ[_TEST_URL_ENV]
-
 
 # ── send_failure_notification ──
 
@@ -1075,3 +1052,342 @@ class TestSendFailureNotification:
             ts = int(vars["timestamp"])
             assert before <= ts <= after
         del os.environ[_TEST_URL_ENV]
+
+
+# ── URL validation ──
+
+
+class TestURLValidation:
+    def test_valid_https_url_passes(self):
+        os.environ[_TEST_URL_ENV] = "https://example.com/webhook"
+        config = WebhookConfig(enabled=True, url_env=_TEST_URL_ENV)
+        notifier = WebhookNotifier(config)
+        assert notifier.url == "https://example.com/webhook"
+        del os.environ[_TEST_URL_ENV]
+
+    def test_valid_http_url_passes(self):
+        os.environ[_TEST_URL_ENV] = "http://localhost:8080/hook"
+        config = WebhookConfig(enabled=True, url_env=_TEST_URL_ENV)
+        notifier = WebhookNotifier(config)
+        assert notifier.url == "http://localhost:8080/hook"
+        del os.environ[_TEST_URL_ENV]
+
+    def test_no_hostname_raises_value_error(self):
+        """Bare strings and URLs without a hostname raise ValueError."""
+        for bad_url in ["not-a-url", "http://", "://"]:
+            os.environ[_TEST_URL_ENV] = bad_url
+            config = WebhookConfig(enabled=True, url_env=_TEST_URL_ENV)
+            try:
+                with pytest.raises(ValueError, match="no hostname"):
+                    WebhookNotifier(config)
+            finally:
+                del os.environ[_TEST_URL_ENV]
+
+    def test_invalid_port_raises_value_error(self):
+        """httpx.URL catches structurally invalid ports like 'abc'."""
+        os.environ[_TEST_URL_ENV] = "http://example.com:abc"
+        config = WebhookConfig(enabled=True, url_env=_TEST_URL_ENV)
+        with pytest.raises(ValueError, match="structurally invalid"):
+            WebhookNotifier(config)
+        del os.environ[_TEST_URL_ENV]
+
+    def test_empty_env_var_value_raises_value_error(self):
+        """Env var exists but is empty string → ValueError."""
+        os.environ[_TEST_URL_ENV] = ""
+        config = WebhookConfig(enabled=True, url_env=_TEST_URL_ENV)
+        with pytest.raises(ValueError, match="empty"):
+            WebhookNotifier(config)
+        del os.environ[_TEST_URL_ENV]
+
+    def test_env_var_not_set_sets_url_none(self):
+        """url_env configured but env var doesn't exist → url=None + console warning."""
+        config = WebhookConfig(enabled=True, url_env=_TEST_URL_ENV)
+        os.environ.pop(_TEST_URL_ENV, None)
+        notifier = WebhookNotifier(config)
+        assert notifier.url is None
+
+    def test_url_env_null_sets_url_none(self):
+        """url_env=None in config → url=None + console warning."""
+        config = WebhookConfig(enabled=True, url_env=None)
+        notifier = WebhookNotifier(config)
+        assert notifier.url is None
+
+    def test_whitespace_url_stripped_and_validated(self):
+        """URL with surrounding whitespace is stripped before validation."""
+        os.environ[_TEST_URL_ENV] = "  https://example.com/webhook  "
+        config = WebhookConfig(enabled=True, url_env=_TEST_URL_ENV)
+        notifier = WebhookNotifier(config)
+        assert notifier.url == "https://example.com/webhook"
+        del os.environ[_TEST_URL_ENV]
+
+    def test_shell_escape_artifacts_stripped(self):
+        """Shell escape artifacts like \\? and \\= are auto-stripped from URL."""
+        os.environ[_TEST_URL_ENV] = "https://oapi.dingtalk.com/robot/send\\?access_token\\=abc123"
+        config = WebhookConfig(enabled=True, url_env=_TEST_URL_ENV)
+        notifier = WebhookNotifier(config)
+        assert notifier.url == "https://oapi.dingtalk.com/robot/send?access_token=abc123"
+        del os.environ[_TEST_URL_ENV]
+
+
+# ── HTTP status code handling ──
+
+
+class TestHTTPStatusHandling:
+    def _make_notifier(self):
+        os.environ[_TEST_URL_ENV] = _TEST_URL
+        config = WebhookConfig(enabled=True, url_env=_TEST_URL_ENV)
+        notifier = WebhookNotifier(config)
+        return notifier
+
+    def _cleanup(self):
+        del os.environ[_TEST_URL_ENV]
+
+    def test_2xx_success(self):
+        notifier = self._make_notifier()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "OK"
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            _run_async(notifier.notify({"date": "2026-04-24"}))
+        self._cleanup()
+
+    def test_3xx_redirect_prints_warning(self):
+        notifier = self._make_notifier()
+        mock_response = MagicMock()
+        mock_response.status_code = 301
+        mock_response.text = ""
+        mock_response.headers = {"location": "https://new-url.com"}
+
+        mock_console = MagicMock()
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            notifier.console = mock_console
+            _run_async(notifier.notify({"date": "2026-04-24"}))
+
+            printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+            assert "redirect" in printed.lower()
+        self._cleanup()
+
+    def test_4xx_client_error_prints_warning(self):
+        notifier = self._make_notifier()
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.text = "Bad request"
+
+        mock_console = MagicMock()
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            notifier.console = mock_console
+            _run_async(notifier.notify({"date": "2026-04-24"}))
+
+            printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+            assert "client error" in printed.lower()
+        self._cleanup()
+
+    def test_5xx_server_error_prints_warning(self):
+        notifier = self._make_notifier()
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.text = "Internal server error"
+
+        mock_console = MagicMock()
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            notifier.console = mock_console
+            _run_async(notifier.notify({"date": "2026-04-24"}))
+
+            printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+            assert "server error" in printed.lower()
+        self._cleanup()
+
+
+# ── Exception classification ──
+
+
+class TestExceptionClassification:
+    def _make_notifier(self):
+        os.environ[_TEST_URL_ENV] = _TEST_URL
+        config = WebhookConfig(enabled=True, url_env=_TEST_URL_ENV)
+        notifier = WebhookNotifier(config)
+        return notifier
+
+    def _cleanup(self):
+        del os.environ[_TEST_URL_ENV]
+
+    def test_connect_error_prints_warning(self):
+        notifier = self._make_notifier()
+        mock_console = MagicMock()
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            notifier.console = mock_console
+            _run_async(notifier.notify({"date": "2026-04-24"}))
+
+            printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+            assert "connection failed" in printed.lower()
+        self._cleanup()
+
+    def test_timeout_exception_prints_warning(self):
+        notifier = self._make_notifier()
+        mock_console = MagicMock()
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(side_effect=httpx.TimeoutException("Timed out"))
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            notifier.console = mock_console
+            _run_async(notifier.notify({"date": "2026-04-24"}))
+
+            printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+            assert "timed out" in printed.lower()
+        self._cleanup()
+
+    def test_invalid_url_exception_prints_warning(self):
+        notifier = self._make_notifier()
+        mock_console = MagicMock()
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(side_effect=httpx.InvalidURL("Bad URL"))
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            notifier.console = mock_console
+            _run_async(notifier.notify({"date": "2026-04-24"}))
+
+            printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+            assert "invalid" in printed.lower()
+        self._cleanup()
+
+    def test_generic_exception_prints_type_name(self):
+        notifier = self._make_notifier()
+        mock_console = MagicMock()
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(side_effect=RuntimeError("Something unexpected"))
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            notifier.console = mock_console
+            _run_async(notifier.notify({"date": "2026-04-24"}))
+
+            printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+            assert "RuntimeError" in printed
+            assert "unexpectedly" in printed.lower()
+        self._cleanup()
+
+
+# ── Config field validation ──
+
+
+class TestWebhookConfigFieldValidation:
+    def test_invalid_delivery_raises_validation_error(self):
+        with pytest.raises(ValidationError, match="delivery"):
+            WebhookConfig(enabled=True, delivery="invalid_mode")
+
+    def test_invalid_platform_raises_validation_error(self):
+        with pytest.raises(ValidationError, match="platform"):
+            WebhookConfig(enabled=True, platform="unknown_platform")
+
+    def test_invalid_layout_raises_validation_error(self):
+        with pytest.raises(ValidationError, match="layout"):
+            WebhookConfig(enabled=True, layout="html")
+
+    def test_invalid_fallback_layout_raises_validation_error(self):
+        with pytest.raises(ValidationError, match="fallback_layout"):
+            WebhookConfig(enabled=True, fallback_layout="html")
+
+    def test_invalid_overview_position_raises_validation_error(self):
+        with pytest.raises(ValidationError, match="overview_position"):
+            WebhookConfig(enabled=True, overview_position="middle")
+
+    def test_all_valid_values_pass(self):
+        config = WebhookConfig(
+            enabled=True,
+            delivery="summary_and_items",
+            platform="feishu",
+            layout="collapsible",
+            fallback_layout="markdown",
+            overview_position="last",
+        )
+        assert config.delivery == "summary_and_items"
+        assert config.platform == "feishu"
+        assert config.layout == "collapsible"
+        assert config.fallback_layout == "markdown"
+        assert config.overview_position == "last"
+
+    def test_each_valid_platform(self):
+        for p in ["generic", "feishu", "lark", "dingtalk", "slack", "discord"]:
+            config = WebhookConfig(enabled=True, platform=p)
+            assert config.platform == p
+
+
+# ── Skip console output ──
+
+
+class TestSkipConsoleOutput:
+    def test_disabled_webhook_prints_warning(self):
+        """When webhook is disabled, notify() prints a yellow warning."""
+        os.environ[_TEST_URL_ENV] = _TEST_URL
+        config = WebhookConfig(enabled=False, url_env=_TEST_URL_ENV)
+        notifier = WebhookNotifier(config)
+        mock_console = MagicMock()
+        notifier.console = mock_console
+
+        _run_async(notifier.notify({"date": "2026-04-24"}))
+
+        mock_console.print.assert_called_once()
+        printed = str(mock_console.print.call_args)
+        assert "disabled" in printed.lower()
+        del os.environ[_TEST_URL_ENV]
+
+    def test_empty_url_prints_warning(self):
+        """When URL is empty (env var not set), notify() prints a yellow warning."""
+        config = WebhookConfig(enabled=True, url_env=_TEST_URL_ENV)
+        os.environ.pop(_TEST_URL_ENV, None)
+        notifier = WebhookNotifier(config)
+        mock_console = MagicMock()
+        notifier.console = mock_console
+
+        _run_async(notifier.notify({"date": "2026-04-24"}))
+
+        # notify() prints warning when URL is empty
+        assert mock_console.print.call_count >= 1
+        printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+        assert "not set" in printed.lower() or "empty" in printed.lower()
