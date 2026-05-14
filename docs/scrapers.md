@@ -133,6 +133,91 @@ Subreddits and users are fetched concurrently. Comments are sorted by score, lim
 
 **Extracted data**: title, URL, author, score, upvote ratio, comment count, subreddit, flair, self-text, and top comments.
 
+## CVE
+
+**File**: `src/scrapers/cve.py`
+
+Uses official vulnerability data sources:
+
+- CISA KEV JSON — Known Exploited Vulnerabilities catalog (static JSON feed with ETag/Last-Modified caching)
+- CVE List V5 `cvelist_v5_delta` — official CVE List delta releases from `CVEProject/cvelistV5`
+- NVD API 2.0 `nvd_recent` — newly published CVEs, queried with `pubStartDate`/`pubEndDate` time range
+- NVD API 2.0 `nvd_modified` — recently modified CVEs, queried with `lastModStartDate`/`lastModEndDate` time range
+
+Horizon treats `cvelist_v5_delta` as the primary incremental discovery source. NVD providers remain useful as enrichment-style sources because the API supports server-side filtering by time range and CVSS severity.
+
+**CVE List V5 delta**:
+- Polls the repository's GitHub Releases Atom feed
+- Tracks the last processed release tag/timestamp in scraper state
+- Downloads the matching hourly `delta_CVEs` zip asset for each unseen release
+- Applies local keyword/vendor/product/CVSS filtering after parsing the CVE JSON records
+
+**Server-side filtering (NVD API 2.0)**:
+- Time range: `pubStartDate`/`pubEndDate` (for recent) or `lastModStartDate`/`lastModEndDate` (for modified)
+- CVSS severity: coarse `cvssV3Severity` filter (CRITICAL / HIGH / MEDIUM / LOW) based on `min_cvss` threshold
+- Keywords, vendors, and products are still filtered locally after the server-side reduction
+
+**Limitations**:
+- Time window must not exceed 120 days per NVD API request. If the configured time window exceeds this limit, Horizon prints a warning and skips the provider. Multi-segment requests for longer windows are not yet implemented.
+- Pagination: the API returns at most 2000 results per page. Horizon requests the maximum page size and follows pagination until all matching results are fetched.
+
+**Rate limits**:
+- Without API key: 5 requests per 30-second window
+- With API key: 50 requests per 30-second window
+- Horizon makes at most 2 NVD API requests per run (one per enabled NVD provider), so an API key is optional
+
+All enabled providers are fetched concurrently inside one scraper. Items are deduplicated by `cve_id` before they leave the scraper. Priority order is:
+
+1. `cisa_kev`
+2. `cvelist_v5_delta`
+3. `nvd_recent`
+4. `nvd_modified`
+
+If the same CVE appears in both KEV and NVD, the KEV item wins and missing NVD metadata such as CVSS, CWE, and reference URLs is merged in.
+
+**Config** (`sources.cve`):
+
+```json
+{
+  "enabled": true,
+  "keywords": ["linux", "openssl"],
+  "vendors": [],
+  "products": [],
+  "providers": [
+    {
+      "type": "cisa_kev",
+      "enabled": true,
+      "keywords": [],
+      "vendors": [],
+      "products": []
+    },
+    {
+      "type": "cvelist_v5_delta",
+      "enabled": true,
+      "min_cvss": 7.0,
+      "keywords": [],
+      "vendors": [],
+      "products": []
+    },
+    {
+      "type": "nvd_recent",
+      "enabled": false,
+      "min_cvss": 7.0,
+      "keywords": [],
+      "vendors": [],
+      "products": []
+    }
+  ]
+}
+```
+
+- `type` — `cisa_kev`, `cvelist_v5_delta`, `nvd_recent`, or `nvd_modified`
+- `min_cvss` — optional minimum CVSS threshold for `cvelist_v5_delta` and NVD providers
+- top-level `keywords` / `vendors` / `products` — default filters shared by all CVE providers
+- provider-level `keywords` / `vendors` / `products` — appended to the top-level defaults for that provider
+
+**Extracted data**: CVE ID, CVSS, severity, CWE, affected vendors/products, KEV flags, required action, due date, published/modified timestamps, and reference URLs.
+
 ## OpenBB
 
 **File**: `src/scrapers/openbb.py`

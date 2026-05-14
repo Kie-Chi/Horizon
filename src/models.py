@@ -9,6 +9,7 @@ from pydantic import BaseModel, HttpUrl, Field
 class SourceType(str, Enum):
     """Supported information source types."""
 
+    CVE = "cve"
     GITHUB = "github"
     HACKERNEWS = "hackernews"
     RSS = "rss"
@@ -189,6 +190,37 @@ class OpenBBConfig(BaseModel):
     filings_provider: str = "sec"
 
 
+class CVEProviderType(str, Enum):
+    """Supported CVE provider types."""
+
+    CISA_KEV = "cisa_kev"
+    CVELIST_V5_DELTA = "cvelist_v5_delta"
+    NVD_RECENT = "nvd_recent"
+    NVD_MODIFIED = "nvd_modified"
+
+
+class CVEProviderConfig(BaseModel):
+    """Configuration for a CVE provider feed."""
+
+    type: CVEProviderType
+    enabled: bool = True
+    min_cvss: Optional[float] = None
+    keywords: List[str] = Field(default_factory=list)
+    vendors: List[str] = Field(default_factory=list)
+    products: List[str] = Field(default_factory=list)
+
+
+class CVEConfig(BaseModel):
+    """Configuration for CVE subscriptions."""
+
+    enabled: bool = True
+    keywords: List[str] = Field(default_factory=list)
+    vendors: List[str] = Field(default_factory=list)
+    products: List[str] = Field(default_factory=list)
+    providers: List[CVEProviderConfig] = Field(default_factory=list)
+    nvd_api_key_env: Optional[str] = None  # env variable name for NVD API key
+
+
 class SourcesConfig(BaseModel):
     """All sources configuration."""
 
@@ -199,6 +231,7 @@ class SourcesConfig(BaseModel):
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     twitter: Optional[TwitterConfig] = None
     openbb: Optional[OpenBBConfig] = None
+    cve: Optional[CVEConfig] = None
 
 
 class WebhookConfig(BaseModel):

@@ -19,6 +19,7 @@ from .scrapers.reddit import RedditScraper
 from .scrapers.telegram import TelegramScraper
 from .scrapers.twitter import TwitterScraper
 from .scrapers.openbb import OpenBBScraper
+from .scrapers.cve import CVEScraper
 from .ai.client import create_ai_client
 from .ai.analyzer import ContentAnalyzer
 from .ai.summarizer import DailySummarizer
@@ -273,6 +274,11 @@ class HorizonOrchestrator:
                 openbb_scraper = OpenBBScraper(self.config.sources.openbb, client)
                 tasks.append(self._fetch_with_progress("OpenBB", openbb_scraper, since))
 
+            # CVE
+            if self.config.sources.cve and self.config.sources.cve.enabled:
+                cve_scraper = CVEScraper(self.config.sources.cve, client, console=self.console)
+                tasks.append(self._fetch_with_progress("CVE", cve_scraper, since))
+
             # Fetch all concurrently
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -325,6 +331,14 @@ class HorizonOrchestrator:
             return meta["repo"]
         if meta.get("watchlist"):
             return meta["watchlist"]
+        if meta.get("provider") == "cisa_kev":
+            return "CISA KEV"
+        if meta.get("provider") == "cvelist_v5_delta":
+            return "CVE List V5"
+        if meta.get("provider") == "nvd_recent":
+            return "NVD recent"
+        if meta.get("provider") == "nvd_modified":
+            return "NVD modified"
         return item.author or "unknown"
 
     def merge_cross_source_duplicates(self, items: List[ContentItem]) -> List[ContentItem]:

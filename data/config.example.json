@@ -99,6 +99,46 @@
           "symbols": ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA"]
         }
       ]
+    },
+    "cve": {
+      "enabled": false,
+      "keywords": ["linux", "openssl", "kubernetes"],
+      "vendors": [],
+      "products": [],
+      "nvd_api_key_env": "NVD_API_KEY",
+      "providers": [
+        {
+          "type": "cisa_kev",
+          "enabled": true,
+          "keywords": [],
+          "vendors": [],
+          "products": []
+        },
+        {
+          "type": "cvelist_v5_delta",
+          "enabled": true,
+          "min_cvss": 7.0,
+          "keywords": [],
+          "vendors": [],
+          "products": []
+        },
+        {
+          "type": "nvd_recent",
+          "enabled": false,
+          "min_cvss": 7.0,
+          "keywords": [],
+          "vendors": [],
+          "products": []
+        },
+        {
+          "type": "nvd_modified",
+          "enabled": false,
+          "min_cvss": 8.0,
+          "keywords": [],
+          "vendors": [],
+          "products": []
+        }
+      ]
     }
   },
   "filtering": {
