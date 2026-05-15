@@ -22,6 +22,7 @@ from rich.console import Console
 
 from .base import BaseScraper
 from ..models import CVEConfig, CVEProviderConfig, CVEProviderType, ContentItem, SourceType
+from ..storage.manager import StorageManager
 
 logger = logging.getLogger(__name__)
 
@@ -68,12 +69,12 @@ class CVEScraper(BaseScraper):
         self,
         config: CVEConfig,
         http_client: httpx.AsyncClient,
-        state_path: Optional[Path] = None,
+        storage: Optional[StorageManager] = None,
         console: Optional[Console] = None,
     ):
         super().__init__({"cve": config}, http_client)
         self.cve_config = config
-        self.state_path = state_path or Path("data/cache/cve_state.json")
+        self.storage = storage
         self.console = console or Console()
         self._state = self._load_state()
         self._nvd_api_key = self._resolve_nvd_api_key()
@@ -1298,20 +1299,12 @@ class CVEScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     def _load_state(self) -> dict[str, Any]:
-        try:
-            if not self.state_path.exists():
-                return {"providers": {}}
-            return json.loads(self.state_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            logger.warning("Failed to load CVE state cache %s: %s", self.state_path, exc)
+        if self.storage is None:
             return {"providers": {}}
+        state = self.storage.load_scraper_state("cve")
+        return state if state else {"providers": {}}
 
     def _save_state(self) -> None:
-        try:
-            self.state_path.parent.mkdir(parents=True, exist_ok=True)
-            self.state_path.write_text(
-                json.dumps(self._state, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-        except Exception as exc:
-            logger.warning("Failed to save CVE state cache %s: %s", self.state_path, exc)
+        if self.storage is None:
+            return
+        self.storage.save_scraper_state("cve", self._state)

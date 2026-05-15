@@ -126,3 +126,40 @@ def test_load_config_expands_env_vars_in_ai_base_url(tmp_path, monkeypatch):
     storage = StorageManager(data_dir=str(tmp_path))
     config = storage.load_config()
     assert config.ai.base_url == "https://private-proxy.example/v1"
+
+
+class TestScraperState:
+    """Tests for load_scraper_state / save_scraper_state methods."""
+
+    def test_load_returns_empty_when_no_state_file(self, tmp_path):
+        storage = StorageManager(data_dir=str(tmp_path))
+        assert storage.load_scraper_state("cve") == {}
+
+    def test_load_returns_empty_on_corrupted_file(self, tmp_path):
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        state_path = cache_dir / "cve_state.json"
+        state_path.write_text("not valid json{{{", encoding="utf-8")
+        storage = StorageManager(data_dir=str(tmp_path))
+        assert storage.load_scraper_state("cve") == {}
+
+    def test_save_and_load_round_trip(self, tmp_path):
+        storage = StorageManager(data_dir=str(tmp_path))
+        state = {"providers": {"cisa_kev": {"cache": {"etag": '"abc"'}}}}
+        storage.save_scraper_state("cve", state)
+        loaded = storage.load_scraper_state("cve")
+        assert loaded == state
+
+    def test_save_creates_cache_directory(self, tmp_path):
+        storage = StorageManager(data_dir=str(tmp_path))
+        # cache dir should not exist yet
+        assert not (tmp_path / "cache").exists()
+        storage.save_scraper_state("cve", {"test": True})
+        assert (tmp_path / "cache" / "cve_state.json").exists()
+
+    def test_different_scraper_names_are_isolated(self, tmp_path):
+        storage = StorageManager(data_dir=str(tmp_path))
+        storage.save_scraper_state("cve", {"cve_data": 1})
+        storage.save_scraper_state("rss", {"rss_data": 2})
+        assert storage.load_scraper_state("cve") == {"cve_data": 1}
+        assert storage.load_scraper_state("rss") == {"rss_data": 2}

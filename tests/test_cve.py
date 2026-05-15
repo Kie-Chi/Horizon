@@ -3,11 +3,8 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import os
-import tempfile
 import zipfile
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -63,16 +60,12 @@ def _cve_config(
 def _make_scraper(
     config: CVEConfig,
     responses: list[httpx.Response],
-    state_path: Path | None = None,
+    storage: StorageManager | None = None,
     console: Console | None = None,
 ) -> CVEScraper:
     client = AsyncMock(spec=httpx.AsyncClient)
     client.get.side_effect = responses
-    if state_path is None:
-        fd, temp_path = tempfile.mkstemp(prefix="horizon-cve-test-", suffix=".json")
-        os.close(fd)
-        state_path = Path(temp_path)
-    return CVEScraper(config, client, state_path=state_path, console=console)
+    return CVEScraper(config, client, storage=storage, console=console)
 
 
 def _kev_response(entries: list[dict]) -> httpx.Response:
@@ -640,25 +633,20 @@ class TestCVEResilience:
 
 class TestCVECaching:
     def test_sends_conditional_headers_from_cached_state(self, tmp_path):
-        state_path = tmp_path / "cve_state.json"
-        state_path.write_text(
-            json.dumps(
-                {
-                    "providers": {
-                        "cisa_kev": {
-                            "etag": '"abc"',
-                            "last_modified_header": "Wed, 14 May 2026 00:00:00 GMT",
-                        }
-                    }
+        storage = StorageManager(data_dir=str(tmp_path))
+        storage.save_scraper_state("cve", {
+            "providers": {
+                "cisa_kev": {
+                    "etag": '"abc"',
+                    "last_modified_header": "Wed, 14 May 2026 00:00:00 GMT",
                 }
-            ),
-            encoding="utf-8",
-        )
+            }
+        })
         provider = _provider(CVEProviderType.CISA_KEV)
         response = _kev_response([_kev_entry()])
         client = AsyncMock(spec=httpx.AsyncClient)
         client.get.return_value = response
-        scraper = CVEScraper(_cve_config(provider), client, state_path=state_path)
+        scraper = CVEScraper(_cve_config(provider), client, storage=storage)
         since = datetime(2026, 5, 12, tzinfo=timezone.utc)
 
         asyncio.run(scraper.fetch(since))
@@ -668,70 +656,60 @@ class TestCVECaching:
         assert headers["If-Modified-Since"] == "Wed, 14 May 2026 00:00:00 GMT"
 
     def test_returns_empty_on_304_and_preserves_state(self, tmp_path):
-        state_path = tmp_path / "cve_state.json"
+        storage = StorageManager(data_dir=str(tmp_path))
         provider = _provider(CVEProviderType.CISA_KEV)
         response = httpx.Response(
             304,
             request=httpx.Request("GET", "https://example.com/kev"),
         )
-        scraper = _make_scraper(_cve_config(provider), [response], state_path=state_path)
+        scraper = _make_scraper(_cve_config(provider), [response], storage=storage)
         since = datetime(2026, 5, 12, tzinfo=timezone.utc)
 
         result = asyncio.run(scraper.fetch(since))
 
         assert result == []
-        saved = json.loads(state_path.read_text(encoding="utf-8"))
+        saved = storage.load_scraper_state("cve")
         assert saved["providers"]["cisa_kev"]["cache"] == {}
 
     def test_migrates_legacy_flat_provider_state(self, tmp_path):
-        state_path = tmp_path / "cve_state.json"
-        state_path.write_text(
-            json.dumps(
-                {
-                    "providers": {
-                        "cisa_kev": {
-                            "etag": '"abc"',
-                            "last_modified_header": "Wed, 14 May 2026 00:00:00 GMT",
-                            "last_success_at": "2026-05-14T00:00:00+00:00",
-                        }
-                    }
+        storage = StorageManager(data_dir=str(tmp_path))
+        storage.save_scraper_state("cve", {
+            "providers": {
+                "cisa_kev": {
+                    "etag": '"abc"',
+                    "last_modified_header": "Wed, 14 May 2026 00:00:00 GMT",
+                    "last_success_at": "2026-05-14T00:00:00+00:00",
                 }
-            ),
-            encoding="utf-8",
-        )
+            }
+        })
         provider = _provider(CVEProviderType.CISA_KEV)
-        scraper = _make_scraper(_cve_config(provider), [_kev_response([_kev_entry()])], state_path=state_path)
+        scraper = _make_scraper(_cve_config(provider), [_kev_response([_kev_entry()])], storage=storage)
 
         asyncio.run(scraper.fetch(datetime(2026, 5, 12, tzinfo=timezone.utc)))
 
-        saved = json.loads(state_path.read_text(encoding="utf-8"))
+        saved = storage.load_scraper_state("cve")
         assert saved["providers"]["cisa_kev"]["cache"]["etag"] == '"abc"'
         assert saved["providers"]["cisa_kev"]["runtime"]["last_success_at"]
 
 
 class TestCVEListDelta:
     def test_skips_already_processed_release(self, tmp_path):
-        state_path = tmp_path / "cve_state.json"
-        state_path.write_text(
-            json.dumps(
-                {
-                    "providers": {
-                        "cvelist_v5_delta": {
-                            "cursor": {
-                                "last_release_tag": "cve_2026-05-14_0700Z",
-                                "last_release_updated": "2026-05-14T07:00:00+00:00",
-                            }
-                        }
+        storage = StorageManager(data_dir=str(tmp_path))
+        storage.save_scraper_state("cve", {
+            "providers": {
+                "cvelist_v5_delta": {
+                    "cursor": {
+                        "last_release_tag": "cve_2026-05-14_0700Z",
+                        "last_release_updated": "2026-05-14T07:00:00+00:00",
                     }
                 }
-            ),
-            encoding="utf-8",
-        )
+            }
+        })
         provider = _provider(CVEProviderType.CVELIST_V5_DELTA)
         scraper = _make_scraper(
             _cve_config(provider),
             [_atom_response([("cve_2026-05-14_0700Z", "2026-05-14T07:00:00Z")])],
-            state_path=state_path,
+            storage=storage,
         )
 
         result = asyncio.run(scraper.fetch(datetime(2026, 5, 13, tzinfo=timezone.utc)))

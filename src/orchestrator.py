@@ -282,7 +282,7 @@ class HorizonOrchestrator:
 
             # CVE
             if self.config.sources.cve and self.config.sources.cve.enabled:
-                cve_scraper = CVEScraper(self.config.sources.cve, client, console=self.console)
+                cve_scraper = CVEScraper(self.config.sources.cve, client, storage=self.storage, console=self.console)
                 tasks.append(self._fetch_with_progress("CVE", cve_scraper, since))
 
             # Fetch all concurrently

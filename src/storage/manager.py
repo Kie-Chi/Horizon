@@ -148,3 +148,30 @@ class StorageManager:
         subscribers_path = self.data_dir / "subscribers.json"
         with open(subscribers_path, "w", encoding="utf-8") as f:
             json.dump(subscribers, f, indent=2)
+
+    # ------------------------------------------------------------------
+    # Scraper state persistence
+    # ------------------------------------------------------------------
+
+    def load_scraper_state(self, scraper_name: str) -> dict[str, Any]:
+        """Load persisted state for a scraper from the cache directory.
+
+        Returns an empty dict when the state file does not exist or is
+        corrupted, so callers can always treat the result as a dict.
+        """
+        state_path = self.data_dir / "cache" / f"{scraper_name}_state.json"
+        if not state_path.exists():
+            return {}
+        try:
+            return json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def save_scraper_state(self, scraper_name: str, state: dict[str, Any]) -> None:
+        """Persist scraper state to the cache directory."""
+        state_path = self.data_dir / "cache" / f"{scraper_name}_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(
+            json.dumps(state, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
