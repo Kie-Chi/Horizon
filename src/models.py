@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, List, Dict, Any, Union
-from pydantic import BaseModel, HttpUrl, Field
+from pydantic import BaseModel, HttpUrl, Field, field_validator
 
 
 class SourceType(str, Enum):
@@ -17,6 +17,7 @@ class SourceType(str, Enum):
     TELEGRAM = "telegram"
     TWITTER = "twitter"
     OPENBB = "openbb"
+    OSSINSIGHT = "ossinsight"
 
 
 class ContentItem(BaseModel):
@@ -190,6 +191,27 @@ class OpenBBConfig(BaseModel):
     filings_provider: str = "sec"
 
 
+class OSSInsightConfig(BaseModel):
+    """OSS Insight trending repos source configuration.
+
+    Pulls top star-gain repositories from the OSS Insight public API and
+    emits them as ContentItems. Optional `keywords` filter limits results
+    to repos whose description, repo name, or collection names contain at
+    least one of the listed substrings (case-insensitive). Leave
+    `keywords` empty to ingest everything trending in the configured
+    languages.
+    """
+
+    enabled: bool = False
+    period: str = "past_24_hours"  # past_24_hours, past_28_days
+    languages: List[str] = Field(
+        default_factory=lambda: ["All", "Python", "TypeScript"]
+    )
+    keywords: List[str] = Field(default_factory=list)
+    min_stars: int = 5
+    max_items: int = 30
+
+
 class CVEProviderType(str, Enum):
     """Supported CVE provider types."""
 
@@ -232,6 +254,7 @@ class SourcesConfig(BaseModel):
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     twitter: Optional[TwitterConfig] = None
     openbb: Optional[OpenBBConfig] = None
+    ossinsight: OSSInsightConfig = Field(default_factory=OSSInsightConfig)
     cve: Optional[CVEConfig] = None
 
 
@@ -256,6 +279,46 @@ class WebhookConfig(BaseModel):
         None  # Optional language filter for webhook delivery; defaults to all AI languages
     )
     enabled: bool = False
+
+    @field_validator("delivery")
+    @classmethod
+    def validate_delivery(cls, v: str) -> str:
+        allowed = {"summary", "summary_and_items"}
+        if v not in allowed:
+            raise ValueError(f"webhook.delivery must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator("platform")
+    @classmethod
+    def validate_platform(cls, v: str) -> str:
+        allowed = {"generic", "feishu", "lark", "dingtalk", "slack", "discord"}
+        if v not in allowed:
+            raise ValueError(f"webhook.platform must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator("layout")
+    @classmethod
+    def validate_layout(cls, v: str) -> str:
+        allowed = {"markdown", "collapsible"}
+        if v not in allowed:
+            raise ValueError(f"webhook.layout must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator("fallback_layout")
+    @classmethod
+    def validate_fallback_layout(cls, v: str) -> str:
+        allowed = {"markdown", "collapsible"}
+        if v not in allowed:
+            raise ValueError(f"webhook.fallback_layout must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator("overview_position")
+    @classmethod
+    def validate_overview_position(cls, v: str) -> str:
+        allowed = {"first", "last"}
+        if v not in allowed:
+            raise ValueError(f"webhook.overview_position must be one of {allowed}, got '{v}'")
+        return v
 
 
 class EmailConfig(BaseModel):

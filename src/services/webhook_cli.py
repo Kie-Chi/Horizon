@@ -152,7 +152,6 @@ async def _run_test(
         lang=lang,
         summarizer=summarizer,
     )
-    console.print("[green]Test notification sent.[/green]")
 
 
 def main() -> None:
